@@ -4,16 +4,19 @@ import re
 import sys
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from time import perf_counter
-from typing import Iterable, List, Tuple
+from time import perf_counter, sleep
+from typing import Callable, Iterable, List, Tuple
 
 from loguru import logger
 from openai import OpenAI
 
 SCRATCHPAD_HEADING = "# -- SCRATCHPAD"
 GROUPING_PREFIX = "Grouping approach: "
-DEFAULT_CHUNK_PARAGRAPHS = 20
+DEFAULT_CHUNK_PARAGRAPHS = 15
 ENV_API_KEY = "OPENAI_API_KEY"
+DEFAULT_MAX_RETRIES = 3
+RETRY_INITIAL_DELAY_SECONDS = 2.0
+RETRY_BACKOFF_FACTOR = 2.0
 INSTRUCTIONS_PROMPT = """# Instructions
 
 - Integrate the provided notes into the document body, following the document's existing structure and the recorded grouping approach.
@@ -211,6 +214,32 @@ def create_openai_client() -> OpenAI:
     return OpenAI(api_key=api_key)
 
 
+def execute_with_retry(
+    operation: Callable[[], str],
+    description: str,
+    max_attempts: int = DEFAULT_MAX_RETRIES,
+    initial_delay_seconds: float = RETRY_INITIAL_DELAY_SECONDS,
+    backoff_factor: float = RETRY_BACKOFF_FACTOR,
+) -> str:
+    attempt = 1
+    delay = initial_delay_seconds
+    while True:
+        try:
+            return operation()
+        except Exception as error:
+            if attempt >= max_attempts:
+                logger.exception(
+                    f"OpenAI {description} failed after {max_attempts} attempt(s): {error}"
+                )
+                raise
+            logger.warning(
+                f"OpenAI {description} attempt {attempt} failed: {error}. Retrying in {delay:.1f}s."
+            )
+            sleep(delay)
+            attempt += 1
+            delay *= backoff_factor
+
+
 def build_integration_prompt(
     grouping: str,
     current_body: str,
@@ -236,16 +265,19 @@ def build_integration_prompt(
     return payload
 
 
-def request_integration(client: OpenAI, prompt: str) -> str:
-    response = client.responses.create(
-        model="gpt-5",
-        reasoning={"effort": "high"},
-        input=prompt,
-    )
-    output_text = response.output_text
-    if not output_text.strip():
-        raise RuntimeError("Received empty response from GPT integration call.")
-    return output_text.strip()
+def request_integration(client: OpenAI, prompt: str, context_label: str) -> str:
+    def perform_request() -> str:
+        response = client.responses.create(
+            model="gpt-5",
+            reasoning={"effort": "high"},
+            input=prompt,
+        )
+        output_text = response.output_text
+        if not output_text.strip():
+            raise RuntimeError("Received empty response from GPT integration call.")
+        return output_text.strip()
+
+    return execute_with_retry(perform_request, f"integration {context_label}")
 
 
 def build_document(body: str, remaining_paragraphs: List[str]) -> str:
@@ -268,27 +300,33 @@ def build_verification_prompt(
     updated_body: str,
 ) -> str:
     return (
-        "You are verifying that every idea from the provided notes was integrated into the updated document body.\n"
+        "You are verifying that every idea/point/concept/argument/detail from the provided notes was integrated into the updated document body.\n"
         "Notes chunk:\n"
         f"{chunk_text}\n\n"
         "Updated document body after integration:\n"
         f"{updated_body}\n\n"
         "Report whether any note content is missing or materially altered."
-        " Respond with a concise single paragraph beginning with 'OK' if everything is covered"
-        " or 'MISSING' followed by details of any omissions."
+        " Respond with a concise single paragraph beginning with 'OK -' if everything is covered"
+        " or 'MISSING -' followed by details of any omissions."
+        ' For each omission, include a sequence such as Notes:"..." Body:"..." Explanation: ... .'
+        ' Quote the exact text from the notes chunk containing the missing detail and quote the exact passage from the updated document body that should cover it (or state Body:"<not present>" if nothing is relevant).'
+        " Explain precisely what information is still missing or altered without omitting any nuance."
     )
 
 
-def request_verification(client: OpenAI, prompt: str) -> str:
-    response = client.responses.create(
-        model="gpt-5",
-        reasoning={"effort": "medium"},
-        input=prompt,
-    )
-    output_text = response.output_text
-    if not output_text.strip():
-        raise RuntimeError("Received empty response from GPT verification call.")
-    return output_text.strip()
+def request_verification(client: OpenAI, prompt: str, context_label: str) -> str:
+    def perform_request() -> str:
+        response = client.responses.create(
+            model="gpt-5",
+            reasoning={"effort": "medium"},
+            input=prompt,
+        )
+        output_text = response.output_text
+        if not output_text.strip():
+            raise RuntimeError("Received empty response from GPT verification call.")
+        return output_text.strip()
+
+    return execute_with_retry(perform_request, f"verification {context_label}")
 
 
 def drain_completed_verifications(
@@ -373,10 +411,11 @@ def integrate_notes(source_path: Path, grouping: str | None, chunk_size: int) ->
                 total_chunks,
                 original_filename,
             )
+            chunk_label = f"chunk {chunk_index + 1}/{total_chunks}"
             logger.info(
                 f"Integrating chunk {chunk_index + 1} of {total_chunks} containing {len(chunk)} paragraphs."
             )
-            updated_body = request_integration(client, prompt)
+            updated_body = request_integration(client, prompt, chunk_label)
             verification_prompt = build_verification_prompt(
                 original_filename,
                 chunk_index,
@@ -385,7 +424,7 @@ def integrate_notes(source_path: Path, grouping: str | None, chunk_size: int) ->
                 updated_body,
             )
             verification_future = executor.submit(
-                request_verification, client, verification_prompt
+                request_verification, client, verification_prompt, chunk_label
             )
             verification_tasks.append((verification_future, chunk_index))
 
