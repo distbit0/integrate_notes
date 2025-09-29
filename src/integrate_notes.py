@@ -7,6 +7,9 @@ from pathlib import Path
 from time import perf_counter, sleep
 from typing import Callable, Iterable, List, Tuple
 
+import shutil
+import subprocess
+
 from loguru import logger
 from openai import OpenAI
 
@@ -57,6 +60,11 @@ INSTRUCTIONS_PROMPT = """# Instructions
 - Ensure nothing from the original document body was lost.
 - If anything is missing, integrate it in appropriately.
 """
+
+
+def wrap_in_cdata(content: str) -> str:
+    sanitized_content = content.replace("]]>", "]]]]><![CDATA[>")
+    return f"<![CDATA[\n{sanitized_content}\n]]>"
 
 
 def configure_logging() -> None:
@@ -214,6 +222,37 @@ def create_openai_client() -> OpenAI:
     return OpenAI(api_key=api_key)
 
 
+NOTIFY_SEND_PATH = shutil.which("notify-send")
+_NOTIFY_SEND_UNAVAILABLE_WARNING_EMITTED = False
+
+
+def notify_missing_verification(chunk_index: int, total_chunks: int, assessment: str) -> None:
+    global _NOTIFY_SEND_UNAVAILABLE_WARNING_EMITTED
+    title = "Integration verification missing content"
+    body = f"Chunk {chunk_index + 1}/{total_chunks}: {assessment}"
+    if NOTIFY_SEND_PATH:
+        try:
+            subprocess.run(
+                [
+                    NOTIFY_SEND_PATH,
+                    "--app-name=IntegrateNotes",
+                    title,
+                    body,
+                ],
+                check=True,
+            )
+        except Exception as error:
+            logger.warning(
+                f"notify-send failed for verification chunk {chunk_index + 1}: {error}"
+            )
+    else:
+        if not _NOTIFY_SEND_UNAVAILABLE_WARNING_EMITTED:
+            logger.warning(
+                "notify-send not available; desktop alerts for verification issues disabled."
+            )
+            _NOTIFY_SEND_UNAVAILABLE_WARNING_EMITTED = True
+
+
 def execute_with_retry(
     operation: Callable[[], str],
     description: str,
@@ -251,18 +290,18 @@ def build_integration_prompt(
     clarifications = (
         "You are integrating notes into the main body of the document incrementally. "
         "For this request, integrate the provided chunk of notes and return only the updated document body text. "
-        f"Maintain the grouping approach: {grouping}. "
+        f"Maintain the grouping approach: {grouping}."
     )
-    payload = (
-        f"{INSTRUCTIONS_PROMPT}\n\n"
-        f"{clarifications}\n\n"
-        "Current document body:\n"
-        f"{current_body}\n\n"
-        "Scratchpad chunk to integrate:\n"
-        f"{chunk_text}\n\n"
-        "Return only the updated document body."
-    )
-    return payload
+    sections = [
+        f"<instructions>\n{INSTRUCTIONS_PROMPT.strip()}\n</instructions>",
+        f"<clarifications>\n{clarifications}\n</clarifications>",
+        "<context>",
+        f"<current_document_body>\n{wrap_in_cdata(current_body)}\n</current_document_body>",
+        f"<scratchpad_chunk>\n{wrap_in_cdata(chunk_text)}\n</scratchpad_chunk>",
+        "</context>",
+        "<response_directive>Return only the updated document body.</response_directive>",
+    ]
+    return "\n".join(sections)
 
 
 def request_integration(client: OpenAI, prompt: str, context_label: str) -> str:
@@ -299,12 +338,7 @@ def build_verification_prompt(
     chunk_text: str,
     updated_body: str,
 ) -> str:
-    return (
-        "You are verifying that every idea/point/concept/argument/detail/url/[[wikilink]]/diagram etc. from the provided notes chunk has been integrated into the updated document body.\n"
-        "Notes chunk:\n"
-        f"{chunk_text}\n\n"
-        "Updated document body after integration:\n"
-        f"{updated_body}\n\n"
+    response_instructions = (
         "Report whether any note content is missing or materially altered."
         " Respond with a concise single paragraph beginning with 'OK -' if everything is covered"
         " or 'MISSING -' followed by details of any omissions."
@@ -312,6 +346,19 @@ def build_verification_prompt(
         ' Quote the exact text from the notes chunk containing the missing detail and quote the exact passage from the updated document body that should cover it (or state Body:"<not present>" if nothing is relevant).'
         " Explain precisely what information is still missing or altered without omitting any nuance."
     )
+
+    sections = [
+        (
+            "<task>"
+            "You are verifying that every idea/point/concept/argument/detail/url/[[wikilink]]/diagram etc. "
+            "from the provided notes chunk has been integrated into the updated document body."
+            "</task>"
+        ),
+        f"<notes_chunk>\n{wrap_in_cdata(chunk_text)}\n</notes_chunk>",
+        f"<updated_document_body>\n{wrap_in_cdata(updated_body)}\n</updated_document_body>",
+        f"<response_guidelines>\n{response_instructions}\n</response_guidelines>",
+    ]
+    return "\n".join(sections)
 
 
 def request_verification(client: OpenAI, prompt: str, context_label: str) -> str:
@@ -339,6 +386,8 @@ def drain_completed_verifications(
         if wait_for_all or future.done():
             try:
                 assessment = future.result()
+                if "MISSING" in assessment:
+                    notify_missing_verification(chunk_index, total_chunks, assessment)
                 logger.info(
                     f"Verification chunk {chunk_index + 1}/{total_chunks}: {assessment}"
                 )
