@@ -269,7 +269,7 @@ def request_integration(client: OpenAI, prompt: str, context_label: str) -> str:
     def perform_request() -> str:
         response = client.responses.create(
             model="gpt-5",
-            reasoning={"effort": "high"},
+            reasoning={"effort": "medium"},
             input=prompt,
         )
         output_text = response.output_text
@@ -300,7 +300,7 @@ def build_verification_prompt(
     updated_body: str,
 ) -> str:
     return (
-        "You are verifying that every idea/point/concept/argument/detail from the provided notes was integrated into the updated document body.\n"
+        "You are verifying that every idea/point/concept/argument/detail/url/[[wikilink]]/diagram etc. from the provided notes chunk has been integrated into the updated document body.\n"
         "Notes chunk:\n"
         f"{chunk_text}\n\n"
         "Updated document body after integration:\n"
