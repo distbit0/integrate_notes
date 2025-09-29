@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import re
 import sys
@@ -21,6 +22,9 @@ ENV_API_KEY = "OPENAI_API_KEY"
 DEFAULT_MAX_RETRIES = 3
 RETRY_INITIAL_DELAY_SECONDS = 2.0
 RETRY_BACKOFF_FACTOR = 2.0
+LAST_VERIFICATION_PROMPT_PATH = (
+    Path(__file__).resolve().parent / ".last_verification_prompt.json"
+)
 INSTRUCTIONS_PROMPT = """# Instructions
 
 - Integrate the provided notes into the document body, following the document's existing structure and the specified grouping approach.
@@ -61,11 +65,6 @@ INSTRUCTIONS_PROMPT = """# Instructions
 - Ensure nothing from the original document body was lost.
 - If anything is missing, integrate it in appropriately.
 """
-
-
-def wrap_in_cdata(content: str) -> str:
-    sanitized_content = content.replace("]]>", "]]]]><![CDATA[>")
-    return f"<![CDATA[\n{sanitized_content}\n]]>"
 
 
 def configure_logging() -> None:
@@ -340,9 +339,6 @@ def build_integration_prompt(
     grouping: str,
     current_body: str,
     chunk_text: str,
-    chunk_number: int,
-    total_chunks: int,
-    original_filename: str,
 ) -> str:
     clarifications = (
         "You are integrating notes into the main body of the document incrementally. "
@@ -353,8 +349,8 @@ def build_integration_prompt(
         f"<instructions>\n{INSTRUCTIONS_PROMPT.strip()}\n</instructions>",
         f"<clarifications>\n{clarifications}\n</clarifications>",
         "<context>",
-        f"<current_document_body>\n{wrap_in_cdata(current_body)}\n</current_document_body>",
-        f"<scratchpad_chunk>\n{wrap_in_cdata(chunk_text)}\n</scratchpad_chunk>",
+        f"<current_document_body>\n{current_body}\n</current_document_body>",
+        f"<scratchpad_chunk>\n{chunk_text}\n</scratchpad_chunk>",
         "</context>",
         "<response_directive>Return only the updated document body.</response_directive>",
     ]
@@ -388,12 +384,82 @@ def build_document(body: str, remaining_paragraphs: List[str]) -> str:
     return document
 
 
+def persist_pending_verification_prompt(
+    prompt: str,
+    context_label: str | None,
+    chunk_index: int | None,
+    total_chunks: int | None,
+) -> None:
+    payload = {
+        "prompt": prompt,
+        "context_label": context_label,
+        "chunk_index": chunk_index,
+        "total_chunks": total_chunks,
+    }
+    try:
+        LAST_VERIFICATION_PROMPT_PATH.write_text(
+            json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8"
+        )
+    except OSError as error:
+        raise RuntimeError(
+            f"Failed to persist verification prompt to {LAST_VERIFICATION_PROMPT_PATH}: {error}"
+        ) from error
+
+
+def load_pending_verification_prompt() -> dict | None:
+    if not LAST_VERIFICATION_PROMPT_PATH.exists():
+        return None
+    try:
+        raw = LAST_VERIFICATION_PROMPT_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            f"Pending verification prompt file {LAST_VERIFICATION_PROMPT_PATH} is corrupted: {error}"
+        ) from error
+    if "prompt" not in data:
+        raise RuntimeError(
+            f"Pending verification prompt file {LAST_VERIFICATION_PROMPT_PATH} is missing required fields."
+        )
+    return data
+
+
+def clear_pending_verification_prompt(
+    expected_prompt: str,
+    expected_context_label: str | None,
+) -> None:
+    if not LAST_VERIFICATION_PROMPT_PATH.exists():
+        return
+    try:
+        raw = LAST_VERIFICATION_PROMPT_PATH.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except FileNotFoundError:
+        return
+    except Exception as error:  # noqa: BLE001
+        logger.warning(
+            f"Unable to inspect pending verification prompt for cleanup: {error}"
+        )
+        return
+    if (
+        data.get("prompt") == expected_prompt
+        and data.get("context_label") == expected_context_label
+    ):
+        try:
+            LAST_VERIFICATION_PROMPT_PATH.unlink()
+        except OSError as error:
+            logger.warning(
+                f"Failed to delete pending verification prompt file: {error}"
+            )
+
+
 def build_verification_prompt(
-    original_filename: str,
-    chunk_number: int,
-    total_chunks: int,
     chunk_text: str,
     updated_body: str,
+    context_label: str | None = None,
+    chunk_index: int | None = None,
+    total_chunks: int | None = None,
 ) -> str:
     response_instructions = (
         "Report whether any note content is missing or materially altered."
@@ -411,11 +477,22 @@ def build_verification_prompt(
             "from the provided notes chunk has been integrated into the updated document body."
             "</task>"
         ),
-        f"<notes_chunk>\n{wrap_in_cdata(chunk_text)}\n</notes_chunk>",
-        f"<updated_document_body>\n{wrap_in_cdata(updated_body)}\n</updated_document_body>",
+        f"<notes_chunk>\n{chunk_text}\n</notes_chunk>",
+        f"<updated_document_body>\n{updated_body}\n</updated_document_body>",
         f"<response_guidelines>\n{response_instructions}\n</response_guidelines>",
     ]
-    return "\n\n\n\n\n".join(sections)
+    prompt = "\n\n\n\n\n".join(sections)
+    persist_pending_verification_prompt(
+        prompt,
+        context_label,
+        chunk_index,
+        total_chunks,
+    )
+    if context_label:
+        logger.info(f"Verification prompt for {context_label}:\n{prompt}")
+    else:
+        logger.info(f"Verification prompt:\n{prompt}")
+    return prompt
 
 
 def request_verification(client: OpenAI, prompt: str, context_label: str) -> str:
@@ -433,13 +510,52 @@ def request_verification(client: OpenAI, prompt: str, context_label: str) -> str
     return execute_with_retry(perform_request, f"verification {context_label}")
 
 
+def resume_pending_verification_if_needed(
+    client: OpenAI, pending_data: dict | None = None
+) -> None:
+    if pending_data is None:
+        pending_data = load_pending_verification_prompt()
+    if not pending_data:
+        return
+
+    prompt = pending_data.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise RuntimeError(
+            f"Pending verification prompt file {LAST_VERIFICATION_PROMPT_PATH} is missing the prompt text."
+        )
+    context_label = pending_data.get("context_label")
+    chunk_index = pending_data.get("chunk_index")
+    total_chunks = pending_data.get("total_chunks")
+
+    display_context = context_label or "pending verification"
+    logger.info(
+        f"Replaying pending verification prompt from {LAST_VERIFICATION_PROMPT_PATH} for {display_context}."
+    )
+    assessment = request_verification(client, prompt, display_context)
+
+    if (
+        isinstance(chunk_index, int)
+        and isinstance(total_chunks, int)
+        and 0 <= chunk_index < total_chunks
+    ):
+        if "MISSING" in assessment:
+            notify_missing_verification(chunk_index, total_chunks, assessment)
+        logger.info(
+            f"Verification chunk {chunk_index + 1}/{total_chunks}: {assessment}"
+        )
+    else:
+        logger.info(f"Resumed verification {display_context}: {assessment}")
+
+    clear_pending_verification_prompt(prompt, context_label)
+
+
 def drain_completed_verifications(
-    tasks: List[Tuple[Future[str], int]],
+    tasks: List[Tuple[Future[str], int, str, str]],
     total_chunks: int,
     wait_for_all: bool = False,
-) -> List[Tuple[Future[str], int]]:
-    pending: List[Tuple[Future[str], int]] = []
-    for future, chunk_index in tasks:
+) -> List[Tuple[Future[str], int, str, str]]:
+    pending: List[Tuple[Future[str], int, str, str]] = []
+    for future, chunk_index, prompt, context_label in tasks:
         if wait_for_all or future.done():
             try:
                 assessment = future.result()
@@ -448,12 +564,13 @@ def drain_completed_verifications(
                 logger.info(
                     f"Verification chunk {chunk_index + 1}/{total_chunks}: {assessment}"
                 )
+                clear_pending_verification_prompt(prompt, context_label)
             except Exception as error:
                 logger.exception(
                     f"Verification chunk {chunk_index + 1}/{total_chunks} failed: {error}"
                 )
         else:
-            pending.append((future, chunk_index))
+            pending.append((future, chunk_index, prompt, context_label))
     return pending
 
 
@@ -487,11 +604,12 @@ def integrate_notes(
                 "Working copy scratchpad is empty; new notes in the source document will need to be synced manually."
             )
     scratchpad_paragraphs = normalize_paragraphs(scratchpad_source)
+    pending_verification_data = load_pending_verification_prompt()
     if not newly_created and working_scratchpad.strip():
         logger.info(
             f"Resuming integration with {len(scratchpad_paragraphs)} scratchpad paragraphs remaining."
         )
-    if not scratchpad_paragraphs:
+    if not scratchpad_paragraphs and not pending_verification_data:
         logger.info(
             "No scratchpad notes to integrate; ensuring scratchpad heading remains present."
         )
@@ -506,11 +624,20 @@ def integrate_notes(
     total_chunks = len(paragraph_chunks)
 
     client = create_openai_client()
-    original_filename = source_path.name
+
+    if pending_verification_data:
+        resume_pending_verification_if_needed(client, pending_verification_data)
+
+    if not scratchpad_paragraphs:
+        logger.info(
+            "No scratchpad notes to integrate; ensuring scratchpad heading remains present."
+        )
+        integrated_path.write_text(build_document(working_body, []), encoding="utf-8")
+        return integrated_path
 
     current_body = working_body
     remaining_paragraphs = scratchpad_paragraphs.copy()
-    verification_tasks: List[Tuple[Future[str], int]] = []
+    verification_tasks: List[Tuple[Future[str], int, str, str]] = []
     integration_start = perf_counter()
 
     with ThreadPoolExecutor(max_workers=4) as executor:
@@ -525,9 +652,6 @@ def integrate_notes(
                 resolved_grouping,
                 current_body,
                 chunk_text,
-                chunk_index,
-                total_chunks,
-                original_filename,
             )
             chunk_label = f"chunk {chunk_index + 1}/{total_chunks}"
             logger.info(
@@ -535,16 +659,18 @@ def integrate_notes(
             )
             updated_body = request_integration(client, prompt, chunk_label)
             verification_prompt = build_verification_prompt(
-                original_filename,
-                chunk_index,
-                total_chunks,
                 chunk_text,
                 updated_body,
+                chunk_label,
+                chunk_index,
+                total_chunks,
             )
             verification_future = executor.submit(
                 request_verification, client, verification_prompt, chunk_label
             )
-            verification_tasks.append((verification_future, chunk_index))
+            verification_tasks.append(
+                (verification_future, chunk_index, verification_prompt, chunk_label)
+            )
 
             current_body = updated_body
             remaining_paragraphs = remaining_paragraphs[len(chunk) :]
