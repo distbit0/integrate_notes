@@ -1,0 +1,26 @@
+[project]
+name = "integrate_notes"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "distbit", email = "adp01@pm.me"},
+]
+dependencies = [
+    "python-dotenv",
+    "loguru",
+    "PySnooper",
+    "requests",
+]
+requires-python = ">=3.13"
+license = {text = "UNLICENCE"}
+readme = "README.md"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
