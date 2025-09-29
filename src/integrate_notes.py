@@ -16,7 +16,7 @@ from openai import OpenAI
 SCRATCHPAD_HEADING = "# -- SCRATCHPAD"
 GROUPING_PREFIX = "Grouping approach: "
 DEFAULT_CHUNK_PARAGRAPHS = 30
-DEFAULT_CHUNK_MAX_WORDS = 700
+DEFAULT_CHUNK_MAX_WORDS = 900
 ENV_API_KEY = "OPENAI_API_KEY"
 DEFAULT_MAX_RETRIES = 3
 RETRY_INITIAL_DELAY_SECONDS = 2.0
@@ -358,7 +358,7 @@ def build_integration_prompt(
         "</context>",
         "<response_directive>Return only the updated document body.</response_directive>",
     ]
-    return "\n".join(sections)
+    return "\n\n\n\n\n".join(sections)
 
 
 def request_integration(client: OpenAI, prompt: str, context_label: str) -> str:
@@ -415,7 +415,7 @@ def build_verification_prompt(
         f"<updated_document_body>\n{wrap_in_cdata(updated_body)}\n</updated_document_body>",
         f"<response_guidelines>\n{response_instructions}\n</response_guidelines>",
     ]
-    return "\n".join(sections)
+    return "\n\n\n\n\n".join(sections)
 
 
 def request_verification(client: OpenAI, prompt: str, context_label: str) -> str:
@@ -551,7 +551,7 @@ def integrate_notes(
             integrated_document = build_document(current_body, remaining_paragraphs)
             integrated_path.write_text(integrated_document, encoding="utf-8")
             logger.info(
-                f"Chunk {chunk_index + 1} integration written to {integrated_path}."
+                f'Chunk {chunk_index + 1} integration written to "{integrated_path}".'
             )
             chunks_completed = chunk_index + 1
             remaining_chunks = total_chunks - chunks_completed
