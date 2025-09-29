@@ -5,7 +5,7 @@ import sys
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from time import perf_counter, sleep
-from typing import Callable, Iterable, List, Tuple
+from typing import Callable, List, Tuple
 
 import shutil
 import subprocess
@@ -15,18 +15,18 @@ from openai import OpenAI
 
 SCRATCHPAD_HEADING = "# -- SCRATCHPAD"
 GROUPING_PREFIX = "Grouping approach: "
-DEFAULT_CHUNK_PARAGRAPHS = 15
+DEFAULT_CHUNK_PARAGRAPHS = 20
+DEFAULT_CHUNK_MAX_WORDS = 700
 ENV_API_KEY = "OPENAI_API_KEY"
 DEFAULT_MAX_RETRIES = 3
 RETRY_INITIAL_DELAY_SECONDS = 2.0
 RETRY_BACKOFF_FACTOR = 2.0
 INSTRUCTIONS_PROMPT = """# Instructions
 
-- Integrate the provided notes into the document body, following the document's existing structure and the recorded grouping approach.
+- Integrate the provided notes into the document body, following the document's existing structure and the specified grouping approach.
 - Break content into relatively atomic bullet points; each bullet should express one idea.
 - Use nested bullets when a point is naturally a sub-point of another.
 - Make minor grammar edits as needed so ideas read cleanly as bullet points.
-- Do not convert notes into bullets "programmatically"; use your judgment for each note.
 - De-duplicate overlapping points without losing any nuance or detail.
 - Keep wording succinct and remove filler words (e.g., "you know", "basically", "essentially", "uh").
 - Add new headings, sub-headings, or parent bullet points for new items, and reuse existing ones where appropriate.
@@ -44,7 +44,8 @@ INSTRUCTIONS_PROMPT = """# Instructions
 - Do not modify tone (e.g., confidence/certainty) or add hedging.
 - Do not omit any links, wikilinks, URLs, diagrams, ASCII art, mathematics, tables, figures, or other non-text content.
 - Keep each link/URL/etc. in the section where it is most relevant based on its surrounding context and its URL text.
-- Do not move links to a separate “resources” or “links” section.
+    - Do not move links to a separate “resources” or “links” section.
+- Do not modify any wikilinks or URLs.
 
 
 # Formatting
@@ -88,7 +89,13 @@ def parse_arguments() -> argparse.Namespace:
         "--chunk-size",
         type=int,
         default=DEFAULT_CHUNK_PARAGRAPHS,
-        help="Number of paragraphs per scratchpad chunk integration request.",
+        help="Max paragraphs per scratchpad chunk integration request.",
+    )
+    parser.add_argument(
+        "--max-chunk-words",
+        type=int,
+        default=DEFAULT_CHUNK_MAX_WORDS,
+        help="Max words per scratchpad chunk integration request.",
     )
     return parser.parse_args()
 
@@ -204,13 +211,61 @@ def format_duration(seconds: float) -> str:
     return " ".join(parts)
 
 
-def iter_chunks(items: List[str], chunk_size: int) -> Iterable[Tuple[int, List[str]]]:
-    if chunk_size <= 0:
+def count_words(text: str) -> int:
+    return len(text.split())
+
+
+def chunk_paragraphs(
+    paragraphs: List[str],
+    max_paragraphs_per_chunk: int,
+    max_words_per_chunk: int,
+) -> List[List[str]]:
+    if max_paragraphs_per_chunk <= 0:
         raise ValueError("Chunk size must be positive.")
-    total = len(items)
-    for start in range(0, total, chunk_size):
-        index = start // chunk_size
-        yield index, items[start : start + chunk_size]
+    if max_words_per_chunk <= 0:
+        raise ValueError("Max chunk words must be positive.")
+
+    chunks: List[List[str]] = []
+    current_chunk: List[str] = []
+    current_word_count = 0
+
+    for paragraph in paragraphs:
+        paragraph_word_count = count_words(paragraph)
+
+        if paragraph_word_count > max_words_per_chunk:
+            if current_chunk:
+                chunks.append(current_chunk)
+                current_chunk = []
+                current_word_count = 0
+            logger.warning(
+                f"Paragraph of {paragraph_word_count} words exceeds max chunk word limit {max_words_per_chunk}; placing in its own chunk."
+            )
+            chunks.append([paragraph])
+            continue
+
+        if not current_chunk:
+            current_chunk = [paragraph]
+            current_word_count = paragraph_word_count
+            continue
+
+        prospective_paragraph_count = len(current_chunk) + 1
+        prospective_word_count = current_word_count + paragraph_word_count
+
+        if (
+            prospective_paragraph_count > max_paragraphs_per_chunk
+            or prospective_word_count > max_words_per_chunk
+        ):
+            chunks.append(current_chunk)
+            current_chunk = [paragraph]
+            current_word_count = paragraph_word_count
+        else:
+            current_chunk.append(paragraph)
+            current_word_count += paragraph_word_count
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    return chunks
 
 
 def create_openai_client() -> OpenAI:
@@ -226,7 +281,9 @@ NOTIFY_SEND_PATH = shutil.which("notify-send")
 _NOTIFY_SEND_UNAVAILABLE_WARNING_EMITTED = False
 
 
-def notify_missing_verification(chunk_index: int, total_chunks: int, assessment: str) -> None:
+def notify_missing_verification(
+    chunk_index: int, total_chunks: int, assessment: str
+) -> None:
     global _NOTIFY_SEND_UNAVAILABLE_WARNING_EMITTED
     title = "Integration verification missing content"
     body = f"Chunk {chunk_index + 1}/{total_chunks}: {assessment}"
@@ -400,7 +457,12 @@ def drain_completed_verifications(
     return pending
 
 
-def integrate_notes(source_path: Path, grouping: str | None, chunk_size: int) -> Path:
+def integrate_notes(
+    source_path: Path,
+    grouping: str | None,
+    max_paragraphs_per_chunk: int,
+    max_words_per_chunk: int,
+) -> Path:
     integrated_path, newly_created = ensure_integrated_copy(source_path)
     source_content = source_path.read_text(encoding="utf-8")
     source_body, source_scratchpad = split_document_sections(source_content)
@@ -436,8 +498,14 @@ def integrate_notes(source_path: Path, grouping: str | None, chunk_size: int) ->
         integrated_path.write_text(build_document(working_body, []), encoding="utf-8")
         return integrated_path
 
+    paragraph_chunks = chunk_paragraphs(
+        scratchpad_paragraphs,
+        max_paragraphs_per_chunk,
+        max_words_per_chunk,
+    )
+    total_chunks = len(paragraph_chunks)
+
     client = create_openai_client()
-    total_chunks = (len(scratchpad_paragraphs) + chunk_size - 1) // chunk_size
     original_filename = source_path.name
 
     current_body = working_body
@@ -446,12 +514,13 @@ def integrate_notes(source_path: Path, grouping: str | None, chunk_size: int) ->
     integration_start = perf_counter()
 
     with ThreadPoolExecutor(max_workers=4) as executor:
-        for chunk_index, chunk in iter_chunks(scratchpad_paragraphs, chunk_size):
+        for chunk_index, chunk in enumerate(paragraph_chunks):
             verification_tasks = drain_completed_verifications(
                 verification_tasks, total_chunks
             )
 
             chunk_text = "\n\n".join(chunk)
+            chunk_word_count = sum(count_words(paragraph) for paragraph in chunk)
             prompt = build_integration_prompt(
                 resolved_grouping,
                 current_body,
@@ -462,7 +531,7 @@ def integrate_notes(source_path: Path, grouping: str | None, chunk_size: int) ->
             )
             chunk_label = f"chunk {chunk_index + 1}/{total_chunks}"
             logger.info(
-                f"Integrating chunk {chunk_index + 1} of {total_chunks} containing {len(chunk)} paragraphs."
+                f"Integrating chunk {chunk_index + 1} of {total_chunks} containing {len(chunk)} paragraphs and {chunk_word_count} words."
             )
             updated_body = request_integration(client, prompt, chunk_label)
             verification_prompt = build_verification_prompt(
@@ -511,7 +580,12 @@ def main() -> None:
     try:
         args = parse_arguments()
         source_path = resolve_source_path(args.source)
-        integrated_path = integrate_notes(source_path, args.grouping, args.chunk_size)
+        integrated_path = integrate_notes(
+            source_path,
+            args.grouping,
+            args.chunk_size,
+            args.max_chunk_words,
+        )
         logger.info(
             f"Integration completed. Updated document available at {integrated_path}."
         )
