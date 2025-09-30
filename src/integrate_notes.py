@@ -20,7 +20,7 @@ from openai import OpenAI
 SCRATCHPAD_HEADING = "# -- SCRATCHPAD"
 GROUPING_PREFIX = "Grouping approach: "
 DEFAULT_CHUNK_PARAGRAPHS = 30
-DEFAULT_CHUNK_MAX_WORDS = 900
+DEFAULT_CHUNK_MAX_WORDS = 400
 ENV_API_KEY = "OPENAI_API_KEY"
 DEFAULT_MAX_RETRIES = 3
 RETRY_INITIAL_DELAY_SECONDS = 2.0
@@ -58,7 +58,7 @@ INSTRUCTIONS_PROMPT = """# Instructions
 
 # Formatting
 
-- Use markdown headings with "#", "##", "###", etc.
+- Use nested markdown headings ("#", "##", "###", etc.) for denoting groups and sub-groups, except if heading text is a [[wikilink]].
 - Use "- " as the bullet prefix (not "* ", "-  ", or anything else).
     - Use four spaces for each level of bullet-point nesting.
 
@@ -906,10 +906,11 @@ def build_verification_prompt(
         "Report whether any note content is missing or materially altered."
         " Respond with a concise single paragraph beginning with 'OK -' if everything is covered"
         " or 'MISSING -' followed by details of any omissions."
-        " Seperate each omission by two newlines and for each one, provide the following:\n"
+        " Seperate each omission by two newlines and for each omission, provide the following:\n"
         '    Notes:"..."\n'
         '    Body:"..."\n'
         '    Explanation: "..."\n'
+        '    Proposed Fix: "..."\n'
         'Quote the exact text from the notes chunk containing the missing detail and quote the exact passage from the updated document body that should cover it (or state Body:"<not present>" if nothing is relevant).'
         " Explain precisely what information is still missing or altered without omitting any nuance."
     )
