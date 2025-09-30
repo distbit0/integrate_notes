@@ -734,7 +734,7 @@ def format_verification_assessment(assessment: str) -> str:
 
 
 class VerificationManager:
-    def __init__(self, client: OpenAI) -> None:
+    def __init__(self, client: OpenAI, target_file: Path) -> None:
         self.client = client
         self.pending_path = PENDING_VERIFICATION_PROMPTS_PATH
         self.lock = Lock()
@@ -743,6 +743,7 @@ class VerificationManager:
         self.executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_VERIFICATIONS)
         self.new_prompt_event = Event()
         self.stop_requested = False
+        self.tracked_file_name = Path(target_file).resolve().name
         self.worker = Thread(
             target=self._run,
             name="VerificationManager",
@@ -766,6 +767,7 @@ class VerificationManager:
             "context_label": context_label,
             "chunk_index": chunk_index,
             "total_chunks": total_chunks,
+            "file_name": self.tracked_file_name,
         }
         with self.lock:
             entries = self._read_entries_locked()
@@ -795,7 +797,8 @@ class VerificationManager:
 
     def _dispatch_pending(self) -> None:
         with self.lock:
-            entries = self._read_entries_locked()
+            all_entries = self._read_entries_locked()
+            entries = self._entries_for_current_file_locked(all_entries)
 
         for entry in entries:
             entry_id = entry.get("id")
@@ -842,6 +845,14 @@ class VerificationManager:
         chunk_index = entry.get("chunk_index")
         total_chunks = entry.get("total_chunks")
         context_label = entry.get("context_label") or "verification"
+        file_name = entry.get("file_name")
+
+        if not file_name:
+            raise RuntimeError(
+                "Verification entry missing required file_name; pending prompts file may be corrupted."
+            )
+
+        base_header = f'Verification "{file_name}"'
 
         if (
             isinstance(chunk_index, int)
@@ -850,13 +861,20 @@ class VerificationManager:
         ):
             if "MISSING" in assessment:
                 notify_missing_verification(chunk_index, total_chunks, assessment)
-            chunk_header = f"Verification chunk {chunk_index + 1}/{total_chunks}:"
+            chunk_header = f"{base_header}:"
             if assessment.startswith(chunk_header):
                 logger.info(assessment)
             else:
                 logger.info(f"{chunk_header}\n{assessment}")
         else:
-            logger.info(f"Verification {context_label}:\n{assessment}")
+            if context_label != "verification":
+                header = f"{base_header} ({context_label}):"
+            else:
+                header = f"{base_header}:"
+            if assessment.startswith(header):
+                logger.info(assessment)
+            else:
+                logger.info(f"{header}\n{assessment}")
 
     def _remove_entry(self, entry_id: str) -> None:
         with self.lock:
@@ -888,10 +906,39 @@ class VerificationManager:
 
     def _has_pending_work(self) -> bool:
         with self.lock:
-            has_entries = bool(self._read_entries_locked())
+            entries = self._read_entries_locked()
+            has_entries = bool(self._entries_for_current_file_locked(entries))
         with self.active_lock:
             has_active = bool(self.active_ids)
         return has_entries or has_active
+
+    def _entries_for_current_file_locked(
+        self, entries: List[dict[str, Any]]
+    ) -> List[dict[str, Any]]:
+        invalid_entries: List[dict[str, Any]] = []
+        relevant_entries: List[dict[str, Any]] = []
+
+        for entry in entries:
+            file_name = entry.get("file_name")
+            entry_id = entry.get("id")
+            if not file_name or not entry_id:
+                invalid_entries.append(entry)
+                continue
+            if file_name == self.tracked_file_name:
+                relevant_entries.append(entry)
+
+        if invalid_entries:
+            invalid_count = len(invalid_entries)
+            suffix = "y" if invalid_count == 1 else "ies"
+            logger.warning(
+                f"Removed {invalid_count} invalid verification prompt entr{suffix} missing file metadata or IDs."
+            )
+            cleaned_entries = [
+                entry for entry in entries if entry not in invalid_entries
+            ]
+            self._write_entries_locked(cleaned_entries)
+
+        return relevant_entries
 
 
 def build_verification_prompt(
@@ -994,7 +1041,7 @@ def integrate_notes(
             f"Resuming integration with {len(scratchpad_paragraphs)} scratchpad paragraphs remaining."
         )
     client = create_openai_client()
-    verification_manager = VerificationManager(client)
+    verification_manager = VerificationManager(client, integrated_path)
 
     try:
         if not scratchpad_paragraphs:
