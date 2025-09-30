@@ -59,6 +59,7 @@ INSTRUCTIONS_PROMPT = """# Instructions
 # Formatting
 
 - Use nested markdown headings ("#", "##", "###", etc.) for denoting groups and sub-groups, except if heading text is a [[wikilink]].
+    - unless document body already employs a different convention, or the grouping approach specifies otherwise.
 - Use "- " as the bullet prefix (not "* ", "-  ", or anything else).
     - Use four spaces for each level of bullet-point nesting.
 
