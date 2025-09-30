@@ -783,7 +783,7 @@ class VerificationManager:
         while True:
             try:
                 self._dispatch_pending()
-            except Exception as error:  # noqa: BLE001
+            except Exception as error:
                 logger.exception(
                     f"Verification dispatcher encountered an error: {error}"
                 )
@@ -841,7 +841,6 @@ class VerificationManager:
         chunk_index = entry.get("chunk_index")
         total_chunks = entry.get("total_chunks")
         context_label = entry.get("context_label") or "verification"
-        formatted_assessment = format_verification_assessment(assessment)
 
         if (
             isinstance(chunk_index, int)
@@ -851,12 +850,12 @@ class VerificationManager:
             if "MISSING" in assessment:
                 notify_missing_verification(chunk_index, total_chunks, assessment)
             chunk_header = f"Verification chunk {chunk_index + 1}/{total_chunks}:"
-            if formatted_assessment.startswith(chunk_header):
-                logger.info(formatted_assessment)
+            if assessment.startswith(chunk_header):
+                logger.info(assessment)
             else:
-                logger.info(f"{chunk_header}\n{formatted_assessment}")
+                logger.info(f"{chunk_header}\n{assessment}")
         else:
-            logger.info(f"Verification {context_label}:\n{formatted_assessment}")
+            logger.info(f"Verification {context_label}:\n{assessment}")
 
     def _remove_entry(self, entry_id: str) -> None:
         with self.lock:
