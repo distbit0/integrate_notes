@@ -50,15 +50,15 @@ INSTRUCTIONS_PROMPT = """# Instructions
 - Preserve questions as questions; do not convert them into statements.
 - Do not guess acronym expansions if they are not specified.
 - Do not modify tone (e.g., confidence/certainty) or add hedging.
-- Do not omit any links, wikilinks, URLs, diagrams, ASCII art, mathematics, tables, figures, or other non-text content.
-- Keep each link/URL/etc. in the section where it is most relevant based on its surrounding context and its URL text.
+- Do not omit any wikilinks, URLs, diagrams, ASCII art, mathematics, tables, figures, or other non-text content.
+- Move each link/URL/etc. to the section where it is most relevant based on its surrounding context and its URL text.
     - Do not move links to a separate “resources” or “links” section.
 - Do not modify any wikilinks or URLs.
 
 
 # Formatting
 
-- Use nested markdown headings ("#", "##", "###", etc.) for denoting groups and sub-groups, except if heading text is a [[wikilink]].
+- Use nested markdown headings ("#", "##", "###", "####", etc.) for denoting groups and sub-groups, except if heading text is a [[wikilink]].
     - unless document body already employs a different convention, or the grouping approach specifies otherwise.
 - Use "- " as the bullet prefix (not "* ", "-  ", or anything else).
     - Use four spaces for each level of bullet-point nesting.
