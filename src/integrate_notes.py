@@ -239,7 +239,7 @@ def prompt_for_grouping() -> str:
         f"Grouping not found. Provide the text that should follow {GROUPING_PREFIX} at the top of the document: "
     ).strip()
     if not grouping:
-        raise ValueError("Grouping approach cannot be empty.")
+        grouping = "Group related points together under headings and sub-headings as appropriate."
     return grouping
 
 
