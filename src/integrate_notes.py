@@ -240,7 +240,7 @@ def prompt_for_grouping() -> str:
         f"Grouping not found. Provide the text that should follow {GROUPING_PREFIX} at the top of the document: "
     ).strip()
     if not grouping:
-        grouping = "Group points according to what you think the most useful/interesting/relevant groupings are."
+        grouping = "Group points according to what you think the most useful/interesting/relevant groupings are. Ensure similar, related and contradictory points are adjacent."
     return grouping
 
 

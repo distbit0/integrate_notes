@@ -1,2 +1,3 @@
 - Use different model for verification as that used for integration
 - Only print out if there is an error.
+- move logs outside of src/
