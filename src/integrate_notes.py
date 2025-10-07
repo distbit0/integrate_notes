@@ -237,7 +237,7 @@ def ensure_grouping_record(body: str, grouping: str) -> str:
 
 def prompt_for_grouping() -> str:
     grouping = input(
-        f"Grouping not found. Provide the text that should follow {GROUPING_PREFIX} at the top of the document: "
+        f"Grouping not found. Provide the text that should follow {GROUPING_PREFIX} at the top of the document.\nExamples:\n- Group points according to what problem each idea/proposal/mechanism/concept addresses/are trying to solve, which you will need to figure out yourself based on context. Do not combine goals/problems that are distinct.\n- Group points according to what you think the most useful/interesting/relevant groupings are. Ensure similar, related and contradictory points are adjacent.\nYour input: "
     ).strip()
     if not grouping:
         grouping = "Group points according to what you think the most useful/interesting/relevant groupings are. Ensure similar, related and contradictory points are adjacent."
