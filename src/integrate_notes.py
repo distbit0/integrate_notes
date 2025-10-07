@@ -151,7 +151,7 @@ def ensure_integrated_copy(source_path: Path) -> Tuple[Path, bool]:
         source_path.read_text(encoding="utf-8"), encoding="utf-8"
     )
     logger.info(f"Created working copy at {integrated_path}.")
-    os.system(f"code {integrated_path}")
+    os.system(f'code "{integrated_path}"')
     return integrated_path, True
 
 
