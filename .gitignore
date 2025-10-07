@@ -90,10 +90,8 @@ profile_default/
 # output and storage
 output/
 data/
-
 src/pending_verification_prompts.json
 
 
 src/logs/*
-
 logs/*
