@@ -36,7 +36,7 @@ INSTRUCTIONS_PROMPT = """# Instructions
 - Break content into relatively atomic bullet points; each bullet should express one idea.
 - Use nested bullets when a point is naturally a sub-point of another.
 - Make minor grammar edits as needed so ideas read cleanly as bullet points.
-- If text is already well-formatted, punctuated and grammatical bullet points, avoid altering its wording.
+- If text to integrate is already well-formatted, punctuated, grammatical and bullet-pointed, avoid altering its wording while integrating it.
 - De-duplicate overlapping points without losing any nuance or detail.
 - Keep wording succinct and remove filler words (e.g., "you know", "basically", "essentially", "uh").
 - Add new headings, sub-headings, or parent bullet points for new items, and reuse existing ones where appropriate.
