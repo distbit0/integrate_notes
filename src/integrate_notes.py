@@ -31,8 +31,8 @@ PENDING_VERIFICATION_PROMPTS_PATH = (
 MAX_CONCURRENT_VERIFICATIONS = 4
 INSTRUCTIONS_PROMPT = """# Instructions
 
-- Integrate the provided notes into the document body, following the document's existing structure and the specified grouping approach.
-- Ensure related points are grouped together, according to the grouping approach.
+- Integrate the provided notes into the document body, following the specified grouping approach.
+- Ensure related points are adjacent, according to the grouping approach.
 - Break content into relatively atomic bullet points; each bullet should express one idea.
 - Use nested bullets when a point is naturally a sub-point of another.
 - Make minor grammar edits as needed so ideas read cleanly as bullet points.
