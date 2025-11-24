@@ -455,7 +455,7 @@ def build_integration_prompt(
 def request_integration(client: OpenAI, prompt: str, context_label: str) -> str:
     def perform_request() -> str:
         response = client.responses.create(
-            model="gpt-5",
+            model="gpt-5.1",
             reasoning={"effort": "medium"},
             input=prompt,
         )
@@ -1001,7 +1001,7 @@ def build_verification_prompt(
 def request_verification(client: OpenAI, prompt: str, context_label: str) -> str:
     def perform_request() -> str:
         response = client.responses.create(
-            model="gpt-5",
+            model="gpt-5.1",
             reasoning={"effort": "medium"},
             input=prompt,
         )
