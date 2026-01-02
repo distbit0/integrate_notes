@@ -1,0 +1,1 @@
+/home/pimania/.codex/AGENTS.md
