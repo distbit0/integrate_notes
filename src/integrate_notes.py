@@ -143,19 +143,6 @@ def resolve_source_path(provided_path: str | None) -> Path:
     return path
 
 
-def ensure_integrated_copy(source_path: Path) -> Tuple[Path, bool]:
-    integrated_name = f"{source_path.stem}_integrated{source_path.suffix}"
-    integrated_path = source_path.with_name(integrated_name)
-    if integrated_path.exists():
-        return integrated_path, False
-    integrated_path.write_text(
-        source_path.read_text(encoding="utf-8"), encoding="utf-8"
-    )
-    logger.info(f"Created working copy at {integrated_path}.")
-    os.system(f'code "{integrated_path}"')
-    return integrated_path, True
-
-
 def split_document_sections(content: str) -> Tuple[str, str]:
     if SCRATCHPAD_HEADING not in content:
         raise ValueError(f"Document must contain the heading '{SCRATCHPAD_HEADING}'.")
@@ -1013,17 +1000,49 @@ def request_verification(client: OpenAI, prompt: str, context_label: str) -> str
     return execute_with_retry(perform_request, f"verification {context_label}")
 
 
+def commit_and_push_original(source_path: Path) -> None:
+    try:
+        subprocess.run(["git", "add", str(source_path)], check=True)
+        subprocess.run(
+            [
+                "git",
+                "commit",
+                "--allow-empty",
+                "-m",
+                f"chore: checkpoint before integrating {source_path.name}",
+            ],
+            check=True,
+        )
+        subprocess.run(["git", "push"], check=True)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(
+            f"Failed to commit and push before integration: {error}"
+        ) from error
+
+
+def refresh_scratchpad_paragraphs(
+    source_path: Path, processed_paragraphs: List[str]
+) -> List[str]:
+    latest_content = source_path.read_text(encoding="utf-8")
+    _, scratchpad = split_document_sections(latest_content)
+    scratchpad_paragraphs = normalize_paragraphs(scratchpad)
+    if processed_paragraphs:
+        if scratchpad_paragraphs[: len(processed_paragraphs)] != processed_paragraphs:
+            raise RuntimeError(
+                "Scratchpad changed in a non-append-only way while integration was running."
+            )
+    return scratchpad_paragraphs
+
+
 def integrate_notes(
     source_path: Path,
     grouping: str | None,
     max_paragraphs_per_chunk: int,
     max_words_per_chunk: int,
 ) -> Path:
-    integrated_path, newly_created = ensure_integrated_copy(source_path)
     source_content = source_path.read_text(encoding="utf-8")
     source_body, source_scratchpad = split_document_sections(source_content)
-    working_content = integrated_path.read_text(encoding="utf-8")
-    working_body, working_scratchpad = split_document_sections(working_content)
+    working_body = source_body
 
     resolved_grouping = (
         grouping or extract_grouping(working_body) or extract_grouping(source_body)
@@ -1033,50 +1052,45 @@ def integrate_notes(
         logger.info("Recorded new grouping approach from user input.")
 
     working_body = ensure_grouping_record(working_body, resolved_grouping)
-
-    if newly_created:
-        scratchpad_source = source_scratchpad
-    else:
-        scratchpad_source = working_scratchpad
-        if not scratchpad_source.strip() and source_scratchpad.strip():
-            logger.info(
-                "Working copy scratchpad is empty; new notes in the source document will need to be synced manually."
-            )
-    scratchpad_paragraphs = normalize_paragraphs(scratchpad_source)
-    if not newly_created and working_scratchpad.strip():
-        logger.info(
-            f"Resuming integration with {len(scratchpad_paragraphs)} scratchpad paragraphs remaining."
-        )
+    commit_and_push_original(source_path)
+    scratchpad_paragraphs = normalize_paragraphs(source_scratchpad)
     client = create_openai_client()
-    verification_manager = VerificationManager(client, integrated_path)
+    verification_manager = VerificationManager(client, source_path)
 
     try:
         if not scratchpad_paragraphs:
             logger.info(
                 "No scratchpad notes to integrate; ensuring scratchpad heading remains present."
             )
-            integrated_path.write_text(
-                build_document(working_body, []), encoding="utf-8"
-            )
-            return integrated_path
-
-        paragraph_chunks = chunk_paragraphs(
-            scratchpad_paragraphs,
-            max_paragraphs_per_chunk,
-            max_words_per_chunk,
-        )
-        total_chunks = len(paragraph_chunks)
+            source_path.write_text(build_document(working_body, []), encoding="utf-8")
+            return source_path
 
         current_body = working_body
-        remaining_paragraphs = scratchpad_paragraphs.copy()
+        processed_paragraphs: List[str] = []
+        chunks_completed = 0
         integration_start = perf_counter()
 
-        for chunk_index, chunk in enumerate(paragraph_chunks):
+        while True:
+            scratchpad_paragraphs = refresh_scratchpad_paragraphs(
+                source_path, processed_paragraphs
+            )
+            remaining_paragraphs = scratchpad_paragraphs[len(processed_paragraphs) :]
+            if not remaining_paragraphs:
+                break
+
+            paragraph_chunks = chunk_paragraphs(
+                remaining_paragraphs,
+                max_paragraphs_per_chunk,
+                max_words_per_chunk,
+            )
+            total_chunks = chunks_completed + len(paragraph_chunks)
+            chunk = paragraph_chunks[0]
             chunk_text = "\n\n".join(chunk)
             chunk_word_count = sum(count_words(paragraph) for paragraph in chunk)
-            chunk_label = f"chunk {chunk_index + 1}/{total_chunks}"
+            chunk_index = chunks_completed
+            chunk_label = f"chunk {chunks_completed + 1}/{total_chunks}"
             logger.info(
-                f"Integrating chunk {chunk_index + 1} of {total_chunks} containing {len(chunk)} paragraphs and {chunk_word_count} words."
+                f"Integrating chunk {chunks_completed + 1} of {total_chunks} containing {len(chunk)} paragraphs and {chunk_word_count} words."
             )
             updated_body, patch_instructions = integrate_chunk_with_patches(
                 client,
@@ -1104,13 +1118,17 @@ def integrate_notes(
             )
 
             current_body = updated_body
-            remaining_paragraphs = remaining_paragraphs[len(chunk) :]
-            integrated_document = build_document(current_body, remaining_paragraphs)
-            integrated_path.write_text(integrated_document, encoding="utf-8")
-            logger.info(
-                f'Chunk {chunk_index + 1} integration written to "{integrated_path}".'
+            processed_paragraphs.extend(chunk)
+            refreshed_paragraphs = refresh_scratchpad_paragraphs(
+                source_path, processed_paragraphs
             )
-            chunks_completed = chunk_index + 1
+            remaining_paragraphs = refreshed_paragraphs[len(processed_paragraphs) :]
+            integrated_document = build_document(current_body, remaining_paragraphs)
+            source_path.write_text(integrated_document, encoding="utf-8")
+            logger.info(
+                f'Chunk {chunks_completed + 1} integration written to "{source_path}".'
+            )
+            chunks_completed += 1
             remaining_chunks = total_chunks - chunks_completed
             if remaining_chunks > 0:
                 elapsed_seconds = perf_counter() - integration_start
@@ -1122,7 +1140,7 @@ def integrate_notes(
                 )
 
         logger.info("All scratchpad notes integrated; scratchpad section cleared.")
-        return integrated_path
+        return source_path
     finally:
         verification_manager.shutdown()
 
