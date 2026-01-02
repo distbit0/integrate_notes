@@ -1021,13 +1021,14 @@ def commit_and_push_original(source_path: Path) -> None:
 
 
 def refresh_scratchpad_paragraphs(
-    source_path: Path, processed_paragraphs: List[str]
+    source_path: Path, expected_prefix: List[str] | None
 ) -> List[str]:
     latest_content = source_path.read_text(encoding="utf-8")
     _, scratchpad = split_document_sections(latest_content)
     scratchpad_paragraphs = normalize_paragraphs(scratchpad)
-    if processed_paragraphs:
-        if scratchpad_paragraphs[: len(processed_paragraphs)] != processed_paragraphs:
+    if expected_prefix is not None:
+        prefix_length = len(expected_prefix)
+        if scratchpad_paragraphs[:prefix_length] != expected_prefix:
             raise RuntimeError(
                 "Scratchpad changed in a non-append-only way while integration was running."
             )
@@ -1066,15 +1067,15 @@ def integrate_notes(
             return source_path
 
         current_body = working_body
-        processed_paragraphs: List[str] = []
+        last_written_remaining: List[str] | None = scratchpad_paragraphs.copy()
         chunks_completed = 0
         integration_start = perf_counter()
 
         while True:
             scratchpad_paragraphs = refresh_scratchpad_paragraphs(
-                source_path, processed_paragraphs
+                source_path, last_written_remaining
             )
-            remaining_paragraphs = scratchpad_paragraphs[len(processed_paragraphs) :]
+            remaining_paragraphs = scratchpad_paragraphs
             if not remaining_paragraphs:
                 break
 
@@ -1118,16 +1119,16 @@ def integrate_notes(
             )
 
             current_body = updated_body
-            processed_paragraphs.extend(chunk)
             refreshed_paragraphs = refresh_scratchpad_paragraphs(
-                source_path, processed_paragraphs
+                source_path, last_written_remaining
             )
-            remaining_paragraphs = refreshed_paragraphs[len(processed_paragraphs) :]
+            remaining_paragraphs = refreshed_paragraphs[len(chunk) :]
             integrated_document = build_document(current_body, remaining_paragraphs)
             source_path.write_text(integrated_document, encoding="utf-8")
             logger.info(
                 f'Chunk {chunks_completed + 1} integration written to "{source_path}".'
             )
+            last_written_remaining = remaining_paragraphs
             chunks_completed += 1
             remaining_chunks = total_chunks - chunks_completed
             if remaining_chunks > 0:
