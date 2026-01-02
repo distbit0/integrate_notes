@@ -85,7 +85,7 @@ MAX_PATCH_ATTEMPTS = 3
 
 def configure_logging() -> None:
     logger.remove()
-    logger.add(sys.stderr, level="INFO", enqueue=True)
+    logger.add(sys.stderr, level="INFO", enqueue=False)
     try:
         LOG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     except OSError as error:
@@ -96,7 +96,7 @@ def configure_logging() -> None:
         LOG_FILE_PATH,
         level="DEBUG",
         rotation=LOG_FILE_ROTATION_BYTES,
-        enqueue=True,
+        enqueue=False,
         encoding="utf-8",
     )
 
