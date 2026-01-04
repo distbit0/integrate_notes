@@ -680,6 +680,26 @@ def _replace_slice(body: str, start: int, end: int, replacement: str) -> str:
     return body[:start] + replacement + body[end:]
 
 
+def _format_patch_block(instruction: PatchInstruction) -> str:
+    return (
+        f"{PATCH_BLOCK_START}\n"
+        f"{instruction.search_text}\n"
+        f"{PATCH_BLOCK_DIVIDER}\n"
+        f"{instruction.replace_text}\n"
+        f"{PATCH_BLOCK_END}"
+    )
+
+
+def _format_duplication_block(proof: DuplicationProof) -> str:
+    return (
+        f"{DUPLICATION_BLOCK_START}\n"
+        f"{proof.notes_text}\n"
+        f"{PATCH_BLOCK_DIVIDER}\n"
+        f"{proof.body_text}\n"
+        f"{DUPLICATION_BLOCK_END}"
+    )
+
+
 def _locate_search_text(body: str, search_text: str) -> tuple[int | None, int | None, str]:
     attempted_descriptions: List[str] = []
 
@@ -753,6 +773,10 @@ def apply_patches_to_body(
                 index=index, search_text=instruction.search_text, reason=reason
             )
             logger.warning(f"Patch {index} failed for {context_label}: {reason}")
+            logger.info(
+                f"Failed patch block for {context_label} (patch {index}):\n"
+                f"{_format_patch_block(instruction)}"
+            )
             return current_body, [failure]
         candidate_body = updated
 
@@ -771,6 +795,10 @@ def validate_duplication_proofs(
             )
             logger.warning(
                 f"Duplication proof {index} failed for {context_label}: {reason}"
+            )
+            logger.info(
+                f"Failed duplication block for {context_label} (duplication {index}):\n"
+                f"{_format_duplication_block(proof)}"
             )
             failures.append(failure)
     return failures
