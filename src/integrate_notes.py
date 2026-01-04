@@ -524,6 +524,12 @@ class DuplicationFailure:
     reason: str
 
 
+class IntegrationParseError(RuntimeError):
+    def __init__(self, message: str, block_text: str) -> None:
+        super().__init__(message)
+        self.block_text = block_text
+
+
 def _normalize_line_endings(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
@@ -548,6 +554,16 @@ def _find_next_block_start(
     if not candidates:
         return None
     return min(candidates, key=lambda item: item[0])
+
+
+def _slice_block_for_error(
+    text: str, start_index: int, search_from: int
+) -> str:
+    next_block = _find_next_block_start(
+        text, search_from, [PATCH_BLOCK_START, DUPLICATION_BLOCK_START]
+    )
+    end_index = next_block[0] if next_block else len(text)
+    return text[start_index:end_index].strip()
 
 
 def parse_integration_blocks(
@@ -580,10 +596,14 @@ def parse_integration_blocks(
             PATCH_BLOCK_DIVIDER, start_index + len(block_start)
         )
         if divider_index == -1:
-            raise RuntimeError(
+            block_text = _slice_block_for_error(
+                cleaned, start_index, start_index + len(block_start)
+            )
+            raise IntegrationParseError(
                 "Integration block is missing the divider '{}'.".format(
                     PATCH_BLOCK_DIVIDER
-                )
+                ),
+                block_text,
             )
 
         if block_start == PATCH_BLOCK_START:
@@ -593,8 +613,12 @@ def parse_integration_blocks(
 
         end_index = cleaned.find(block_end, divider_index + len(PATCH_BLOCK_DIVIDER))
         if end_index == -1:
-            raise RuntimeError(
-                "Integration block is missing the end marker '{}'.".format(block_end)
+            block_text = _slice_block_for_error(
+                cleaned, start_index, divider_index + len(PATCH_BLOCK_DIVIDER)
+            )
+            raise IntegrationParseError(
+                "Integration block is missing the end marker '{}'.".format(block_end),
+                block_text,
             )
 
         first_segment = cleaned[start_index + len(block_start) : divider_index]
@@ -605,16 +629,20 @@ def parse_integration_blocks(
 
         if block_start == PATCH_BLOCK_START:
             if not first_text.strip():
-                raise RuntimeError(
-                    "Patch SEARCH text must contain non-whitespace characters."
+                block_text = cleaned[start_index : end_index + len(block_end)].strip()
+                raise IntegrationParseError(
+                    "Patch SEARCH text must contain non-whitespace characters.",
+                    block_text,
                 )
             instructions.append(
                 PatchInstruction(search_text=first_text, replace_text=second_text)
             )
         else:
             if not first_text.strip() or not second_text.strip():
-                raise RuntimeError(
-                    "Duplication block must include non-whitespace notes and body text."
+                block_text = cleaned[start_index : end_index + len(block_end)].strip()
+                raise IntegrationParseError(
+                    "Duplication block must include non-whitespace notes and body text.",
+                    block_text,
                 )
             duplications.append(
                 DuplicationProof(notes_text=first_text, body_text=second_text)
@@ -780,6 +808,21 @@ def integrate_chunk_with_patches(
 
         try:
             instructions, duplications = parse_integration_blocks(patch_text)
+        except IntegrationParseError as error:
+            failed_formatting = str(error)
+            failed_patches = None
+            failed_duplications = None
+            logger.warning(
+                f"Integration response formatting failed for {attempt_label}: {error}"
+            )
+            logger.info(
+                f"Invalid integration response for {attempt_label} on attempt {attempt}; "
+                f"reason: {error}\nFailed block:\n{error.block_text}"
+            )
+            logger.info(
+                f"Retrying {context_label}; response formatting was invalid on attempt {attempt}."
+            )
+            continue
         except RuntimeError as error:
             failed_formatting = str(error)
             failed_patches = None
@@ -787,9 +830,9 @@ def integrate_chunk_with_patches(
             logger.warning(
                 f"Integration response formatting failed for {attempt_label}: {error}"
             )
-            logger.debug(
+            logger.info(
                 f"Invalid integration response for {attempt_label} on attempt {attempt}; "
-                f"reason: {error}\nResponse text:\n{patch_text}"
+                f"reason: {error}"
             )
             logger.info(
                 f"Retrying {context_label}; response formatting was invalid on attempt {attempt}."
@@ -816,20 +859,6 @@ def integrate_chunk_with_patches(
             failed_duplications = None
 
         failed_patches = failures
-        failure_lines: List[str] = []
-        if failed_patches:
-            for failure in failed_patches:
-                failure_lines.append(f"Patch {failure.index}: {failure.reason}")
-        if failed_duplications:
-            for failure in failed_duplications:
-                failure_lines.append(
-                    f"Duplication {failure.index}: {failure.reason}"
-                )
-        failure_details = "\n".join(failure_lines) if failure_lines else "Unknown failure"
-        logger.debug(
-            f"Integration retry details for {context_label} on attempt {attempt}:\n"
-            f"{failure_details}\nResponse text:\n{patch_text}"
-        )
         logger.info(
             f"Retrying {context_label}; "
             f"{len(failed_patches)} patch(es) and "
