@@ -563,9 +563,7 @@ def _find_next_block_start(
     return min(candidates, key=lambda item: item[0])
 
 
-def _slice_block_for_error(
-    text: str, start_index: int, search_from: int
-) -> str:
+def _slice_block_for_error(text: str, start_index: int, search_from: int) -> str:
     next_block = _find_next_block_start(
         text, search_from, [PATCH_BLOCK_START, DUPLICATION_BLOCK_START]
     )
@@ -875,9 +873,11 @@ def integrate_chunk_with_patches(
             failed_patches=failed_patches,
             failed_duplications=failed_duplications,
             failed_formatting=failed_formatting,
-            previous_response=previous_response
-            if failed_formatting or failed_patches or failed_duplications
-            else None,
+            previous_response=(
+                previous_response
+                if failed_formatting or failed_patches or failed_duplications
+                else None
+            ),
         )
         patch_text = request_integration(client, prompt, attempt_label)
         previous_response = patch_text
@@ -1191,7 +1191,7 @@ def build_verification_prompt(
         '    Body:"..."\n'
         '    Explanation: "..."\n'
         '    Proposed Fix: "..."\n'
-        "Quote the exact text from the notes chunk containing the missing detail and quote the exact passage from the patch replacements or duplication proofs that should cover it (or state Body:\"<not present>\" if nothing is relevant)."
+        'Quote the exact text from the notes chunk containing the missing detail and quote the exact passage from the patch replacements or duplication proofs that should cover it (or state Body:"<not present>" if nothing is relevant).'
         " Explain precisely what information is still missing or altered without omitting any nuance."
     )
 
