@@ -19,6 +19,8 @@ from openai import OpenAI
 
 SCRATCHPAD_HEADING = "# -- SCRATCHPAD"
 GROUPING_PREFIX = "Grouping approach: "
+GROUPING_BLOCK_START = "<!-- GROUPING APPROACH START -->"
+GROUPING_BLOCK_END = "<!-- GROUPING APPROACH END -->"
 DEFAULT_CHUNK_PARAGRAPHS = 30
 DEFAULT_CHUNK_MAX_WORDS = 400
 ENV_API_KEY = "OPENAI_API_KEY"
@@ -160,86 +162,147 @@ def split_document_sections(content: str) -> Tuple[str, str]:
     return body, scratchpad
 
 
-def extract_grouping(body: str) -> str | None:
+@dataclass(frozen=True)
+class GroupingSection:
+    text: str
+    raw: str
+    format: str
+
+
+def _find_front_matter_end_index(lines: List[str]) -> int:
+    index = 0
+    total_lines = len(lines)
+    while index < total_lines and not lines[index].strip():
+        index += 1
+    if index < total_lines and lines[index].strip() == "---":
+        index += 1
+        while index < total_lines and lines[index].strip() != "---":
+            index += 1
+        if index < total_lines:
+            index += 1
+    return index
+
+
+def _extract_grouping_from_line(line: str) -> str | None:
+    stripped = line.lstrip()
+    if not stripped.lower().startswith(GROUPING_PREFIX.lower()):
+        return None
+    prefix_length = len(GROUPING_PREFIX)
+    return stripped[prefix_length:]
+
+
+def extract_grouping_section(body: str) -> tuple[GroupingSection | None, str]:
     lines = body.splitlines()
-    line_index = 0
+    if not lines:
+        return None, body
 
-    if lines and lines[0].strip() == "---":
-        line_index += 1
-        # Skip YAML front matter so grouping detection does not stop there.
-        while line_index < len(lines):
-            if lines[line_index].strip() == "---":
-                line_index += 1
-                break
-            line_index += 1
+    start_index = _find_front_matter_end_index(lines)
+    grouping_index = start_index
+    while grouping_index < len(lines) and not lines[grouping_index].strip():
+        grouping_index += 1
 
-    for line in lines[line_index:]:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.lower().startswith(GROUPING_PREFIX.lower()):
-            return stripped[len(GROUPING_PREFIX) :].strip()
-    return None
+    if grouping_index < len(lines) and lines[grouping_index].strip() == GROUPING_BLOCK_START:
+        end_index = grouping_index + 1
+        while end_index < len(lines) and lines[end_index].strip() != GROUPING_BLOCK_END:
+            end_index += 1
+        if end_index >= len(lines):
+            raise ValueError(
+                f"Grouping approach block is missing the end marker '{GROUPING_BLOCK_END}'."
+            )
+        grouping_lines = lines[grouping_index + 1 : end_index]
+        raw_block = "\n".join(lines[grouping_index : end_index + 1])
+        grouping_text = "\n".join(grouping_lines)
+        removal_end = end_index + 1
+        if removal_end < len(lines) and not lines[removal_end].strip():
+            removal_end += 1
+        remaining_lines = lines[:grouping_index] + lines[removal_end:]
+        return GroupingSection(
+            text=grouping_text, raw=raw_block, format="block"
+        ), "\n".join(remaining_lines)
+
+    if grouping_index < len(lines):
+        grouping_text = _extract_grouping_from_line(lines[grouping_index])
+        if grouping_text is not None:
+            raw_line = lines[grouping_index]
+            removal_end = grouping_index + 1
+            if removal_end < len(lines) and not lines[removal_end].strip():
+                removal_end += 1
+            remaining_lines = lines[:grouping_index] + lines[removal_end:]
+            return GroupingSection(
+                text=grouping_text, raw=raw_line, format="legacy"
+            ), "\n".join(remaining_lines)
+
+    return None, body
 
 
-def ensure_grouping_record(body: str, grouping: str) -> str:
-    normalized_grouping = grouping.strip()
-    if not normalized_grouping:
+def _format_grouping_block(grouping_text: str) -> str:
+    if grouping_text.endswith("\n"):
+        return f"{GROUPING_BLOCK_START}\n{grouping_text}{GROUPING_BLOCK_END}"
+    return f"{GROUPING_BLOCK_START}\n{grouping_text}\n{GROUPING_BLOCK_END}"
+
+
+def render_grouping_section(
+    grouping_text: str, existing_section: GroupingSection | None, preserve_existing: bool
+) -> str:
+    if not grouping_text.strip():
         raise ValueError("Grouping approach cannot be empty.")
 
-    grouping_line = f"{GROUPING_PREFIX}{normalized_grouping}"
+    if preserve_existing and existing_section is not None:
+        return existing_section.raw
 
-    if not body.strip():
-        return f"{grouping_line}\n"
+    target_format = existing_section.format if existing_section else "block"
+    if target_format == "legacy":
+        if "\n" in grouping_text:
+            raise ValueError(
+                "Legacy 'Grouping approach:' format does not support multiline content. "
+                "Remove the legacy line or add a grouping block instead."
+            )
+        return f"{GROUPING_PREFIX}{grouping_text}"
+    if target_format == "block":
+        return _format_grouping_block(grouping_text)
+    raise ValueError(f"Unknown grouping format: {target_format}")
+
+
+def insert_grouping_section(body: str, grouping_section: str | None) -> str:
+    if not grouping_section:
+        return body
 
     lines = body.splitlines()
-
-    insertion_index = 0
-    total_lines = len(lines)
-    while insertion_index < total_lines and not lines[insertion_index].strip():
+    insertion_index = _find_front_matter_end_index(lines)
+    while insertion_index < len(lines) and not lines[insertion_index].strip():
         insertion_index += 1
 
-    if insertion_index < total_lines and lines[insertion_index].strip() == "---":
-        insertion_index += 1
-        while insertion_index < total_lines and lines[insertion_index].strip() != "---":
-            insertion_index += 1
-        if insertion_index < total_lines:
-            insertion_index += 1
-        while insertion_index < total_lines and not lines[insertion_index].strip():
-            insertion_index += 1
-
-    existing_indices = [
-        index
-        for index, line in enumerate(lines)
-        if line.strip().lower().startswith(GROUPING_PREFIX.lower())
-    ]
-
-    if existing_indices:
-        first_index = existing_indices[0]
-        for duplicate_index in sorted(existing_indices[1:], reverse=True):
-            lines.pop(duplicate_index)
-        if first_index < insertion_index:
-            insertion_index -= 1
-        lines.pop(first_index)
-
-    lines.insert(insertion_index, grouping_line)
-
-    next_index = insertion_index + 1
-    if next_index >= len(lines) or lines[next_index].strip():
+    grouping_lines = grouping_section.splitlines()
+    lines[insertion_index:insertion_index] = grouping_lines
+    next_index = insertion_index + len(grouping_lines)
+    if next_index < len(lines) and lines[next_index].strip():
         lines.insert(next_index, "")
 
     return "\n".join(lines)
 
 
 def prompt_for_grouping() -> str:
-    grouping = input(
-        f"""Grouping not found. Provide the text that should follow {GROUPING_PREFIX} at the top of the document.
-Examples:
-- Grouping approach: Group points according to what problem each idea/proposal/mechanism/concept addresses/are trying to solve, which you will need to figure out yourself based on context. Do not combine multiple goals/problems into one group. Keep goals/problems specific. Ensure groups are mutually exclusive and collectively exhaustive. Avoid overlap between group's goals/problems. sub-headings should be per-mechanism/per-solution i.e. according to which "idea"/solution each point relates to.
-- Group points according to what you think the most useful/interesting/relevant groupings are. Ensure similar, related and contradictory points are adjacent.
-Your input: """
-    ).strip()
-    if not grouping:
+    prompt = (
+        "Grouping not found. Provide the text that should follow "
+        f"{GROUPING_PREFIX} at the top of the document.\n"
+        "Enter multiline text and finish with a single line containing only a '.'.\n"
+        "Examples:\n"
+        "- Grouping approach: Group points according to what problem each idea/proposal/mechanism/concept addresses/are trying to solve, which you will need to figure out yourself based on context. Do not combine multiple goals/problems into one group. Keep goals/problems specific. Ensure groups are mutually exclusive and collectively exhaustive. Avoid overlap between group's goals/problems. sub-headings should be per-mechanism/per-solution i.e. according to which \"idea\"/solution each point relates to.\n"
+        "- Group points according to what you think the most useful/interesting/relevant groupings are. Ensure similar, related and contradictory points are adjacent.\n"
+        "Your input:\n"
+    )
+    print(prompt, end="")
+    lines: List[str] = []
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            break
+        if line == ".":
+            break
+        lines.append(line)
+    grouping = "\n".join(lines)
+    if not grouping.strip():
         grouping = "Group points according to what you think the most useful/interesting/relevant groupings are. Ensure similar, related and contradictory points are adjacent."
     return grouping
 
@@ -946,8 +1009,11 @@ def integrate_chunk_with_patches(
     )
 
 
-def build_document(body: str, remaining_paragraphs: List[str]) -> str:
-    trimmed_body = body.rstrip()
+def build_document(
+    body: str, grouping_section: str | None, remaining_paragraphs: List[str]
+) -> str:
+    body_with_grouping = insert_grouping_section(body, grouping_section)
+    trimmed_body = body_with_grouping.rstrip()
     document_parts = [trimmed_body, SCRATCHPAD_HEADING]
     if remaining_paragraphs:
         scratchpad_text = "\n\n".join(remaining_paragraphs).rstrip()
@@ -1296,16 +1362,18 @@ def integrate_notes(
 ) -> Path:
     source_content = source_path.read_text(encoding="utf-8")
     source_body, source_scratchpad = split_document_sections(source_content)
-    working_body = source_body
+    grouping_section, working_body = extract_grouping_section(source_body)
 
-    resolved_grouping = (
-        grouping or extract_grouping(working_body) or extract_grouping(source_body)
-    )
+    resolved_grouping = grouping or (grouping_section.text if grouping_section else None)
     if not resolved_grouping:
         resolved_grouping = prompt_for_grouping()
         logger.info("Recorded new grouping approach from user input.")
 
-    working_body = ensure_grouping_record(working_body, resolved_grouping)
+    grouping_section_text = render_grouping_section(
+        resolved_grouping,
+        grouping_section,
+        preserve_existing=grouping is None and grouping_section is not None,
+    )
     commit_and_push_original(source_path)
     scratchpad_paragraphs = normalize_paragraphs(source_scratchpad)
     client = create_openai_client()
@@ -1318,7 +1386,10 @@ def integrate_notes(
             logger.info(
                 "No scratchpad notes to integrate; ensuring scratchpad heading remains present."
             )
-            source_path.write_text(build_document(working_body, []), encoding="utf-8")
+            source_path.write_text(
+                build_document(working_body, grouping_section_text, []),
+                encoding="utf-8",
+            )
             return source_path
 
         current_body = working_body
@@ -1381,7 +1452,9 @@ def integrate_notes(
                 source_path, last_written_remaining
             )
             remaining_paragraphs = refreshed_paragraphs[len(chunk) :]
-            integrated_document = build_document(current_body, remaining_paragraphs)
+            integrated_document = build_document(
+                current_body, grouping_section_text, remaining_paragraphs
+            )
             source_path.write_text(integrated_document, encoding="utf-8")
             logger.info(
                 f'Chunk {chunks_completed + 1} integration written to "{source_path}".'

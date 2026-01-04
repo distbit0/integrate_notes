@@ -6,5 +6,3 @@
     - ensure that the model uses arbitrarily nested md headers, to make this approach scalable instead of only e.g. using one level of headings
 - move logs outside of src/
 - put group strat into front matter
-- allow grouping approach section in the document to span multiple lines, whereas currently it can only span one line. also do not include it in the document body which is sent to the llm to generate search/replace blocks for. only include it in the Maintain the grouping approach: {grouping} part of the prompt which is distinct from the document body section of the prompt. also it should be impossible for the llm to intentionally or accidentally modify the grouping approach section of the document, even if it generates a search replace block where the search matches part of the grouping approach section exactly. 
-    - still maintaining backwards compatibility with old/previous single line Grouping approach: document prefix format for old documents which still use this syntax and haven't migrated to a multiline grouping approach
