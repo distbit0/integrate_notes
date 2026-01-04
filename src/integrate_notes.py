@@ -127,6 +127,11 @@ def parse_arguments() -> argparse.Namespace:
         default=DEFAULT_CHUNK_MAX_WORDS,
         help="Max words per scratchpad chunk integration request.",
     )
+    parser.add_argument(
+        "--disable-verification",
+        action="store_true",
+        help="Disable verification prompts and background verification checks.",
+    )
     return parser.parse_args()
 
 
@@ -1244,6 +1249,7 @@ def integrate_notes(
     grouping: str | None,
     max_paragraphs_per_chunk: int,
     max_words_per_chunk: int,
+    disable_verification: bool,
 ) -> Path:
     source_content = source_path.read_text(encoding="utf-8")
     source_body, source_scratchpad = split_document_sections(source_content)
@@ -1260,7 +1266,9 @@ def integrate_notes(
     commit_and_push_original(source_path)
     scratchpad_paragraphs = normalize_paragraphs(source_scratchpad)
     client = create_openai_client()
-    verification_manager = VerificationManager(client, source_path)
+    verification_manager = (
+        None if disable_verification else VerificationManager(client, source_path)
+    )
 
     try:
         if not scratchpad_paragraphs:
@@ -1306,23 +1314,24 @@ def integrate_notes(
                     chunk_label,
                 )
             )
-            patch_replacements = [
-                instruction.replace_text for instruction in patch_instructions
-            ]
-            verification_prompt = build_verification_prompt(
-                chunk_text,
-                patch_replacements,
-                duplication_proofs,
-                chunk_label,
-                chunk_index,
-                total_chunks,
-            )
-            verification_manager.enqueue_prompt(
-                verification_prompt,
-                chunk_label,
-                chunk_index,
-                total_chunks,
-            )
+            if verification_manager is not None:
+                patch_replacements = [
+                    instruction.replace_text for instruction in patch_instructions
+                ]
+                verification_prompt = build_verification_prompt(
+                    chunk_text,
+                    patch_replacements,
+                    duplication_proofs,
+                    chunk_label,
+                    chunk_index,
+                    total_chunks,
+                )
+                verification_manager.enqueue_prompt(
+                    verification_prompt,
+                    chunk_label,
+                    chunk_index,
+                    total_chunks,
+                )
 
             current_body = updated_body
             refreshed_paragraphs = refresh_scratchpad_paragraphs(
@@ -1349,7 +1358,8 @@ def integrate_notes(
         logger.info("All scratchpad notes integrated; scratchpad section cleared.")
         return source_path
     finally:
-        verification_manager.shutdown()
+        if verification_manager is not None:
+            verification_manager.shutdown()
 
 
 def main() -> None:
@@ -1362,6 +1372,7 @@ def main() -> None:
             args.grouping,
             args.chunk_size,
             args.max_chunk_words,
+            args.disable_verification,
         )
         logger.info(
             f"Integration completed. Updated document available at {integrated_path}."
