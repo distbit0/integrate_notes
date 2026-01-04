@@ -392,6 +392,7 @@ def build_integration_prompt(
     chunk_text: str,
     failed_patches: List["PatchFailure"] | None = None,
     failed_duplications: List["DuplicationFailure"] | None = None,
+    failed_formatting: str | None = None,
     previous_response: str | None = None,
 ) -> str:
     clarifications = (
@@ -420,8 +421,13 @@ def build_integration_prompt(
         f"<response_directive>{response_instructions}</response_directive>",
     ]
 
-    if failed_patches or failed_duplications:
+    if failed_formatting or failed_patches or failed_duplications:
         feedback_lines: List[str] = []
+        if failed_formatting:
+            feedback_lines.append(
+                "The previous response could not be parsed. Fix the formatting issues below and re-emit only valid blocks."
+            )
+            feedback_lines.append(f"Error: {failed_formatting}")
         if failed_patches:
             feedback_lines.append(
                 "The previous patch attempt failed because the SEARCH block(s) below did not match the current document."
@@ -751,6 +757,7 @@ def integrate_chunk_with_patches(
 ) -> tuple[str, List[PatchInstruction], List[DuplicationProof]]:
     failed_patches: List[PatchFailure] | None = None
     failed_duplications: List[DuplicationFailure] | None = None
+    failed_formatting: str | None = None
     previous_response: str | None = None
 
     for attempt in range(1, MAX_PATCH_ATTEMPTS + 1):
@@ -763,14 +770,28 @@ def integrate_chunk_with_patches(
             chunk_text,
             failed_patches=failed_patches,
             failed_duplications=failed_duplications,
+            failed_formatting=failed_formatting,
             previous_response=previous_response
-            if failed_patches or failed_duplications
+            if failed_formatting or failed_patches or failed_duplications
             else None,
         )
         patch_text = request_integration(client, prompt, attempt_label)
         previous_response = patch_text
 
-        instructions, duplications = parse_integration_blocks(patch_text)
+        try:
+            instructions, duplications = parse_integration_blocks(patch_text)
+        except RuntimeError as error:
+            failed_formatting = str(error)
+            failed_patches = None
+            failed_duplications = None
+            logger.warning(
+                f"Integration response formatting failed for {attempt_label}: {error}"
+            )
+            logger.info(
+                f"Retrying {context_label}; response formatting was invalid on attempt {attempt}."
+            )
+            continue
+        failed_formatting = None
         updated_body, failures = apply_patches_to_body(
             base_body, instructions, attempt_label
         )
