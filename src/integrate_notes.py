@@ -717,7 +717,7 @@ def _locate_search_text(
         if next_index != -1:
             reason = (
                 "SEARCH text matched multiple locations using exact match; "
-                "make SEARCH text more specific."
+                "increase SEARCH text length to match a longer, more specific span."
             )
             return None, None, reason
         return index, index + len(search_text), ""
@@ -733,7 +733,7 @@ def _locate_search_text(
             if next_index != -1:
                 reason = (
                     "SEARCH text matched multiple locations using trimmed newline "
-                    "boundaries; make SEARCH text more specific."
+                    "boundaries; increase SEARCH text length to match a longer, more specific span."
                 )
                 return None, None, reason
             return index, index + len(trimmed_newline_search), ""
@@ -752,7 +752,7 @@ def _locate_search_text(
             if next_index != -1:
                 reason = (
                     "SEARCH text matched multiple locations using trimmed outer "
-                    "whitespace; make SEARCH text more specific."
+                    "whitespace; increase SEARCH text length to match a longer, more specific span."
                 )
                 return None, None, reason
             return index, index + len(trimmed_whitespace_search), ""
@@ -765,7 +765,7 @@ def _locate_search_text(
             if len(matches) > 1:
                 reason = (
                     "SEARCH text matched multiple locations using normalized whitespace "
-                    "gaps; make SEARCH text more specific."
+                    "gaps; increase SEARCH text length to match a longer, more specific span."
                 )
                 return None, None, reason
             match = matches[0]
@@ -778,7 +778,7 @@ def _locate_search_text(
             if len(matches) > 1:
                 reason = (
                     "SEARCH text matched multiple locations using removed whitespace "
-                    "gaps; make SEARCH text more specific."
+                    "gaps; increase SEARCH text length to match a longer, more specific span."
                 )
                 return None, None, reason
             match = matches[0]
