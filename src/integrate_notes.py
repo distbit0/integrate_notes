@@ -787,6 +787,10 @@ def integrate_chunk_with_patches(
             logger.warning(
                 f"Integration response formatting failed for {attempt_label}: {error}"
             )
+            logger.debug(
+                f"Invalid integration response for {attempt_label} on attempt {attempt}; "
+                f"reason: {error}\nResponse text:\n{patch_text}"
+            )
             logger.info(
                 f"Retrying {context_label}; response formatting was invalid on attempt {attempt}."
             )
@@ -812,6 +816,20 @@ def integrate_chunk_with_patches(
             failed_duplications = None
 
         failed_patches = failures
+        failure_lines: List[str] = []
+        if failed_patches:
+            for failure in failed_patches:
+                failure_lines.append(f"Patch {failure.index}: {failure.reason}")
+        if failed_duplications:
+            for failure in failed_duplications:
+                failure_lines.append(
+                    f"Duplication {failure.index}: {failure.reason}"
+                )
+        failure_details = "\n".join(failure_lines) if failure_lines else "Unknown failure"
+        logger.debug(
+            f"Integration retry details for {context_label} on attempt {attempt}:\n"
+            f"{failure_details}\nResponse text:\n{patch_text}"
+        )
         logger.info(
             f"Retrying {context_label}; "
             f"{len(failed_patches)} patch(es) and "
