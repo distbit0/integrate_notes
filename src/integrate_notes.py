@@ -705,12 +705,21 @@ def _format_duplication_block(proof: DuplicationProof) -> str:
     )
 
 
-def _locate_search_text(body: str, search_text: str) -> tuple[int | None, int | None, str]:
+def _locate_search_text(
+    body: str, search_text: str
+) -> tuple[int | None, int | None, str]:
     attempted_descriptions: List[str] = []
 
     index = body.find(search_text)
     attempted_descriptions.append("exact match")
     if index != -1:
+        next_index = body.find(search_text, index + len(search_text))
+        if next_index != -1:
+            reason = (
+                "SEARCH text matched multiple locations using exact match; "
+                "make SEARCH text more specific."
+            )
+            return None, None, reason
         return index, index + len(search_text), ""
 
     trimmed_newline_search = search_text.strip("\n")
@@ -718,6 +727,15 @@ def _locate_search_text(body: str, search_text: str) -> tuple[int | None, int | 
         attempted_descriptions.append("trimmed newline boundaries")
         index = body.find(trimmed_newline_search)
         if index != -1:
+            next_index = body.find(
+                trimmed_newline_search, index + len(trimmed_newline_search)
+            )
+            if next_index != -1:
+                reason = (
+                    "SEARCH text matched multiple locations using trimmed newline "
+                    "boundaries; make SEARCH text more specific."
+                )
+                return None, None, reason
             return index, index + len(trimmed_newline_search), ""
 
     trimmed_whitespace_search = search_text.strip()
@@ -728,19 +746,42 @@ def _locate_search_text(body: str, search_text: str) -> tuple[int | None, int | 
         attempted_descriptions.append("trimmed outer whitespace")
         index = body.find(trimmed_whitespace_search)
         if index != -1:
+            next_index = body.find(
+                trimmed_whitespace_search, index + len(trimmed_whitespace_search)
+            )
+            if next_index != -1:
+                reason = (
+                    "SEARCH text matched multiple locations using trimmed outer "
+                    "whitespace; make SEARCH text more specific."
+                )
+                return None, None, reason
             return index, index + len(trimmed_whitespace_search), ""
 
     if search_text.strip():
         pattern_whitespace = _build_whitespace_pattern(search_text, allow_zero=False)
         attempted_descriptions.append("normalized whitespace gaps")
-        match = pattern_whitespace.search(body)
-        if match:
+        matches = list(pattern_whitespace.finditer(body))
+        if matches:
+            if len(matches) > 1:
+                reason = (
+                    "SEARCH text matched multiple locations using normalized whitespace "
+                    "gaps; make SEARCH text more specific."
+                )
+                return None, None, reason
+            match = matches[0]
             return match.start(), match.end(), ""
 
         pattern_relaxed = _build_whitespace_pattern(search_text, allow_zero=True)
         attempted_descriptions.append("removed whitespace gaps")
-        match = pattern_relaxed.search(body)
-        if match:
+        matches = list(pattern_relaxed.finditer(body))
+        if matches:
+            if len(matches) > 1:
+                reason = (
+                    "SEARCH text matched multiple locations using removed whitespace "
+                    "gaps; make SEARCH text more specific."
+                )
+                return None, None, reason
+            match = matches[0]
             return match.start(), match.end(), ""
 
     reason = "SEARCH text not found after attempts: " + ", ".join(
