@@ -1,5 +1,10 @@
-- Use different model for verification as that used for integration
-- Only print out if there is an error.
+- ask model to provide snippets from integrate text for each find/replace, to clarify what it intended it to integrate
+    - on fail, only ask the model to provide just that single failed block instead of asking it to provide all blocks again. this is only possible once the model returns what integrated text each block relates 
+- use structured responses
+- only ask for start and end lines of search block instead of exact text. if there are multiple matches, ask model to provide a sufficient number of of lines at start or end to narrow down options to a single match. ensure that the search block which the verification prompt sees is not affected by this, by populating the SEARCH section of the block given in the verification prompt with the matching text from the file, instead of only including the start and end lines provided by the model
+- modify so that it uses tool calling + hierarchical markdown parsing to avoid needing to ever send the entire document to the model, and instead allow the model to find the relevant section(s) (could often be more than one section which should be modified even to integrate a single piece of info) to modify, and then once it has found the sections, it provides the search/replace diffs
+    - ensure that the model uses arbitrarily nested md headers, to make this approach scalable instead of only e.g. using one level of headings
 - move logs outside of src/
-- print out the diff w/ red&green after each change
 - put group strat into front matter
+- allow grouping approach section in the document to span multiple lines, whereas currently it can only span one line. also do not include it in the document body which is sent to the llm to generate search/replace blocks for. only include it in the Maintain the grouping approach: {grouping} part of the prompt which is distinct from the document body section of the prompt. also it should be impossible for the llm to intentionally or accidentally modify the grouping approach section of the document, even if it generates a search replace block where the search matches part of the grouping approach section exactly. 
+    - still maintaining backwards compatibility with old/previous single line Grouping approach: document prefix format for old documents which still use this syntax and haven't migrated to a multiline grouping approach
