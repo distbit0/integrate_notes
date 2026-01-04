@@ -56,6 +56,7 @@ INSTRUCTIONS_PROMPT = """# Instructions
 - Move each link/URL/etc. to the section where it is most relevant based on its surrounding context and its URL text.
     - Do not move links to a separate “resources” or “links” section.
 - Do not modify any wikilinks or URLs.
+- Any SEARCH or DUPLICATE text you emit must be a single contiguous span copied from the document body; do not concatenate non-adjacent fragments.
 
 
 # Formatting
@@ -412,6 +413,7 @@ def build_integration_prompt(
         f"\n{DUPLICATION_BLOCK_START}\n<notes text already covered>\n{PATCH_BLOCK_DIVIDER}\n<body text that already contains it>\n{DUPLICATION_BLOCK_END}"
         "\nEmit the blocks back-to-back in the order they should be applied or checked. "
         "If any notes are already present in the document body and therefore do not need a patch, you must include a duplication proof block for them. "
+        "SEARCH and DUPLICATE/BODY text must each be a single contiguous span copied from the current document body; do not concatenate separate sections. "
         "Do not add commentary, numbering, markdown fences, or explanations. "
         "If no changes are required and no duplication proofs are needed, return an empty string."
     )
