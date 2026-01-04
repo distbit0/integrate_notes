@@ -80,6 +80,8 @@ LOG_FILE_ROTATION_BYTES = 2 * 1024 * 1024
 PATCH_BLOCK_START = "<<<<<<< SEARCH"
 PATCH_BLOCK_DIVIDER = "======="
 PATCH_BLOCK_END = ">>>>>>> REPLACE"
+DUPLICATION_BLOCK_START = "<<<<<<< DUPLICATE"
+DUPLICATION_BLOCK_END = ">>>>>>> DUPLICATE"
 MAX_PATCH_ATTEMPTS = 3
 
 
@@ -389,6 +391,7 @@ def build_integration_prompt(
     current_body: str,
     chunk_text: str,
     failed_patches: List["PatchFailure"] | None = None,
+    failed_duplications: List["DuplicationFailure"] | None = None,
     previous_response: str | None = None,
 ) -> str:
     clarifications = (
@@ -396,11 +399,15 @@ def build_integration_prompt(
         f"Maintain the grouping approach: {grouping}."
     )
     response_instructions = (
-        "Return only patch instructions using this exact structure for each change:"
-        f"\n{PATCH_BLOCK_START}\n<text to find>\n{PATCH_BLOCK_DIVIDER}\n<replacement text>\n{PATCH_BLOCK_END}. "
-        "Emit the blocks back-to-back in the order they should be applied. "
+        "Return only patch instructions and duplication proofs using the exact structures below."
+        " For each patch:"
+        f"\n{PATCH_BLOCK_START}\n<text to find>\n{PATCH_BLOCK_DIVIDER}\n<replacement text>\n{PATCH_BLOCK_END}"
+        "\nFor each duplication proof (use this when notes are already present in the current document body, so no patch is needed):"
+        f"\n{DUPLICATION_BLOCK_START}\n<notes text already covered>\n{PATCH_BLOCK_DIVIDER}\n<body text that already contains it>\n{DUPLICATION_BLOCK_END}"
+        "\nEmit the blocks back-to-back in the order they should be applied or checked. "
+        "If any notes are already present in the document body and therefore do not need a patch, you must include a duplication proof block for them. "
         "Do not add commentary, numbering, markdown fences, or explanations. "
-        "If no changes are required, return an empty string."
+        "If no changes are required and no duplication proofs are needed, return an empty string."
     )
 
     sections = [
@@ -413,16 +420,28 @@ def build_integration_prompt(
         f"<response_directive>{response_instructions}</response_directive>",
     ]
 
-    if failed_patches:
-        feedback_lines: List[str] = [
-            "The previous patch attempt failed because the SEARCH block(s) below did not match the current document."
-        ]
-        for failure in failed_patches:
+    if failed_patches or failed_duplications:
+        feedback_lines: List[str] = []
+        if failed_patches:
             feedback_lines.append(
-                f"Patch {failure.index} SEARCH text (please adjust so it matches exactly):"
+                "The previous patch attempt failed because the SEARCH block(s) below did not match the current document."
             )
-            feedback_lines.append(failure.search_text)
-            feedback_lines.append(f"Reason: {failure.reason}")
+            for failure in failed_patches:
+                feedback_lines.append(
+                    f"Patch {failure.index} SEARCH text (please adjust so it matches exactly):"
+                )
+                feedback_lines.append(failure.search_text)
+                feedback_lines.append(f"Reason: {failure.reason}")
+        if failed_duplications:
+            feedback_lines.append(
+                "The previous duplication proof attempt failed because the BODY text below did not match the current document."
+            )
+            for failure in failed_duplications:
+                feedback_lines.append(
+                    f"Duplication {failure.index} BODY text (please adjust so it matches exactly):"
+                )
+                feedback_lines.append(failure.body_text)
+                feedback_lines.append(f"Reason: {failure.reason}")
         sections.append(
             "<previous_attempt_feedback>\n"
             + "\n\n".join(feedback_lines)
@@ -480,9 +499,22 @@ class PatchInstruction:
 
 
 @dataclass(frozen=True)
+class DuplicationProof:
+    notes_text: str
+    body_text: str
+
+
+@dataclass(frozen=True)
 class PatchFailure:
     index: int
     search_text: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class DuplicationFailure:
+    index: int
+    body_text: str
     reason: str
 
 
@@ -499,60 +531,92 @@ def _sanitize_patch_segment(segment: str) -> str:
     return cleaned
 
 
-def parse_patch_instructions(patch_text: str) -> List[PatchInstruction]:
-    if not patch_text.strip():
-        return []
+def _find_next_block_start(
+    text: str, position: int, markers: Sequence[str]
+) -> tuple[int, str] | None:
+    candidates: List[tuple[int, str]] = []
+    for marker in markers:
+        index = text.find(marker, position)
+        if index != -1:
+            candidates.append((index, marker))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item[0])
 
-    cleaned = _normalize_line_endings(patch_text)
+
+def parse_integration_blocks(
+    response_text: str,
+) -> tuple[List[PatchInstruction], List[DuplicationProof]]:
+    if not response_text.strip():
+        return [], []
+
+    cleaned = _normalize_line_endings(response_text)
     instructions: List[PatchInstruction] = []
+    duplications: List[DuplicationProof] = []
     position = 0
 
     while True:
-        start_index = cleaned.find(PATCH_BLOCK_START, position)
-        if start_index == -1:
+        next_block = _find_next_block_start(
+            cleaned, position, [PATCH_BLOCK_START, DUPLICATION_BLOCK_START]
+        )
+        if next_block is None:
             remaining = cleaned[position:].strip()
             if remaining:
                 logger.warning(
-                    "Ignoring unexpected content outside patch blocks: {}".format(
+                    "Ignoring unexpected content outside integration blocks: {}".format(
                         remaining[:120]
                     )
                 )
             break
 
+        start_index, block_start = next_block
         divider_index = cleaned.find(
-            PATCH_BLOCK_DIVIDER, start_index + len(PATCH_BLOCK_START)
+            PATCH_BLOCK_DIVIDER, start_index + len(block_start)
         )
         if divider_index == -1:
             raise RuntimeError(
-                "Patch block is missing the divider '{}'.".format(PATCH_BLOCK_DIVIDER)
+                "Integration block is missing the divider '{}'.".format(
+                    PATCH_BLOCK_DIVIDER
+                )
             )
 
-        end_index = cleaned.find(
-            PATCH_BLOCK_END, divider_index + len(PATCH_BLOCK_DIVIDER)
-        )
+        if block_start == PATCH_BLOCK_START:
+            block_end = PATCH_BLOCK_END
+        else:
+            block_end = DUPLICATION_BLOCK_END
+
+        end_index = cleaned.find(block_end, divider_index + len(PATCH_BLOCK_DIVIDER))
         if end_index == -1:
             raise RuntimeError(
-                "Patch block is missing the end marker '{}'.".format(PATCH_BLOCK_END)
+                "Integration block is missing the end marker '{}'.".format(block_end)
             )
 
-        search_segment = cleaned[start_index + len(PATCH_BLOCK_START) : divider_index]
-        replace_segment = cleaned[divider_index + len(PATCH_BLOCK_DIVIDER) : end_index]
+        first_segment = cleaned[start_index + len(block_start) : divider_index]
+        second_segment = cleaned[divider_index + len(PATCH_BLOCK_DIVIDER) : end_index]
 
-        search_text = _sanitize_patch_segment(search_segment)
-        replace_text = _sanitize_patch_segment(replace_segment)
+        first_text = _sanitize_patch_segment(first_segment)
+        second_text = _sanitize_patch_segment(second_segment)
 
-        if not search_text.strip():
-            raise RuntimeError(
-                "Patch SEARCH text must contain non-whitespace characters."
+        if block_start == PATCH_BLOCK_START:
+            if not first_text.strip():
+                raise RuntimeError(
+                    "Patch SEARCH text must contain non-whitespace characters."
+                )
+            instructions.append(
+                PatchInstruction(search_text=first_text, replace_text=second_text)
+            )
+        else:
+            if not first_text.strip() or not second_text.strip():
+                raise RuntimeError(
+                    "Duplication block must include non-whitespace notes and body text."
+                )
+            duplications.append(
+                DuplicationProof(notes_text=first_text, body_text=second_text)
             )
 
-        instructions.append(
-            PatchInstruction(search_text=search_text, replace_text=replace_text)
-        )
+        position = end_index + len(block_end)
 
-        position = end_index + len(PATCH_BLOCK_END)
-
-    return instructions
+    return instructions, duplications
 
 
 def _build_whitespace_pattern(text: str, allow_zero: bool) -> re.Pattern[str]:
@@ -582,27 +646,20 @@ def _replace_slice(body: str, start: int, end: int, replacement: str) -> str:
     return body[:start] + replacement + body[end:]
 
 
-def try_apply_patch(body: str, instruction: PatchInstruction) -> tuple[bool, str, str]:
-    search_text = instruction.search_text
-    replace_text = instruction.replace_text
-
+def _locate_search_text(body: str, search_text: str) -> tuple[int | None, int | None, str]:
     attempted_descriptions: List[str] = []
 
     index = body.find(search_text)
     attempted_descriptions.append("exact match")
     if index != -1:
-        updated = _replace_slice(body, index, index + len(search_text), replace_text)
-        return True, updated, ""
+        return index, index + len(search_text), ""
 
     trimmed_newline_search = search_text.strip("\n")
     if trimmed_newline_search and trimmed_newline_search != search_text:
         attempted_descriptions.append("trimmed newline boundaries")
         index = body.find(trimmed_newline_search)
         if index != -1:
-            updated = _replace_slice(
-                body, index, index + len(trimmed_newline_search), replace_text
-            )
-            return True, updated, ""
+            return index, index + len(trimmed_newline_search), ""
 
     trimmed_whitespace_search = search_text.strip()
     if trimmed_whitespace_search and trimmed_whitespace_search not in {
@@ -612,30 +669,37 @@ def try_apply_patch(body: str, instruction: PatchInstruction) -> tuple[bool, str
         attempted_descriptions.append("trimmed outer whitespace")
         index = body.find(trimmed_whitespace_search)
         if index != -1:
-            updated = _replace_slice(
-                body, index, index + len(trimmed_whitespace_search), replace_text
-            )
-            return True, updated, ""
+            return index, index + len(trimmed_whitespace_search), ""
 
     if search_text.strip():
         pattern_whitespace = _build_whitespace_pattern(search_text, allow_zero=False)
         attempted_descriptions.append("normalized whitespace gaps")
         match = pattern_whitespace.search(body)
         if match:
-            updated = _replace_slice(body, match.start(), match.end(), replace_text)
-            return True, updated, ""
+            return match.start(), match.end(), ""
 
         pattern_relaxed = _build_whitespace_pattern(search_text, allow_zero=True)
         attempted_descriptions.append("removed whitespace gaps")
         match = pattern_relaxed.search(body)
         if match:
-            updated = _replace_slice(body, match.start(), match.end(), replace_text)
-            return True, updated, ""
+            return match.start(), match.end(), ""
 
     reason = "SEARCH text not found after attempts: " + ", ".join(
         attempted_descriptions
     )
-    return False, body, reason
+    return None, None, reason
+
+
+def try_apply_patch(body: str, instruction: PatchInstruction) -> tuple[bool, str, str]:
+    search_text = instruction.search_text
+    replace_text = instruction.replace_text
+
+    start, end, reason = _locate_search_text(body, search_text)
+    if start is None or end is None:
+        return False, body, reason
+
+    updated = _replace_slice(body, start, end, replace_text)
+    return True, updated, ""
 
 
 def apply_patches_to_body(
@@ -661,14 +725,32 @@ def apply_patches_to_body(
     return candidate_body, []
 
 
+def validate_duplication_proofs(
+    current_body: str, proofs: List[DuplicationProof], context_label: str
+) -> List[DuplicationFailure]:
+    failures: List[DuplicationFailure] = []
+    for index, proof in enumerate(proofs, start=1):
+        start, end, reason = _locate_search_text(current_body, proof.body_text)
+        if start is None or end is None:
+            failure = DuplicationFailure(
+                index=index, body_text=proof.body_text, reason=reason
+            )
+            logger.warning(
+                f"Duplication proof {index} failed for {context_label}: {reason}"
+            )
+            failures.append(failure)
+    return failures
+
+
 def integrate_chunk_with_patches(
     client: OpenAI,
     grouping: str,
     base_body: str,
     chunk_text: str,
     context_label: str,
-) -> tuple[str, List[PatchInstruction]]:
+) -> tuple[str, List[PatchInstruction], List[DuplicationProof]]:
     failed_patches: List[PatchFailure] | None = None
+    failed_duplications: List[DuplicationFailure] | None = None
     previous_response: str | None = None
 
     for attempt in range(1, MAX_PATCH_ATTEMPTS + 1):
@@ -680,26 +762,39 @@ def integrate_chunk_with_patches(
             base_body,
             chunk_text,
             failed_patches=failed_patches,
-            previous_response=previous_response if failed_patches else None,
+            failed_duplications=failed_duplications,
+            previous_response=previous_response
+            if failed_patches or failed_duplications
+            else None,
         )
         patch_text = request_integration(client, prompt, attempt_label)
         previous_response = patch_text
 
-        instructions = parse_patch_instructions(patch_text)
+        instructions, duplications = parse_integration_blocks(patch_text)
         updated_body, failures = apply_patches_to_body(
             base_body, instructions, attempt_label
         )
 
         if not failures:
-            if failed_patches:
-                logger.info(
-                    f"Patches succeeded for {context_label} on attempt {attempt}."
-                )
-            return updated_body, instructions
+            duplication_failures = validate_duplication_proofs(
+                updated_body, duplications, attempt_label
+            )
+            if not duplication_failures:
+                if failed_patches or failed_duplications:
+                    logger.info(
+                        f"Patches and duplication proofs succeeded for {context_label} on attempt {attempt}."
+                    )
+                return updated_body, instructions, duplications
+            failures = []
+            failed_duplications = duplication_failures
+        else:
+            failed_duplications = None
 
         failed_patches = failures
         logger.info(
-            f"Retrying {context_label}; {len(failed_patches)} patch(es) failed to match."
+            f"Retrying {context_label}; "
+            f"{len(failed_patches)} patch(es) and "
+            f"{len(failed_duplications or [])} duplication proof(s) failed to match."
         )
 
     raise RuntimeError(
@@ -938,7 +1033,7 @@ class VerificationManager:
 def build_verification_prompt(
     chunk_text: str,
     patch_replacements: Sequence[str],
-    updated_body: str,
+    duplication_proofs: Sequence[DuplicationProof],
     context_label: str | None = None,
     chunk_index: int | None = None,
     total_chunks: int | None = None,
@@ -952,7 +1047,7 @@ def build_verification_prompt(
         '    Body:"..."\n'
         '    Explanation: "..."\n'
         '    Proposed Fix: "..."\n'
-        'Quote the exact text from the notes chunk containing the missing detail and quote the exact passage from the updated document body that should cover it (or state Body:"<not present>" if nothing is relevant).'
+        "Quote the exact text from the notes chunk containing the missing detail and quote the exact passage from the patch replacements or duplication proofs that should cover it (or state Body:\"<not present>\" if nothing is relevant)."
         " Explain precisely what information is still missing or altered without omitting any nuance."
     )
 
@@ -966,19 +1061,32 @@ def build_verification_prompt(
     else:
         replacements_block = "<no patch replacements provided>"
 
+    if duplication_proofs:
+        duplication_sections = []
+        for index, proof in enumerate(duplication_proofs, start=1):
+            duplication_sections.append(
+                "[Duplication {index} Proof]\nNotes:\n{notes}\n\nBody:\n{body}".format(
+                    index=index, notes=proof.notes_text, body=proof.body_text
+                )
+            )
+        duplications_block = "\n\n".join(duplication_sections)
+    else:
+        duplications_block = "<no duplication proofs provided>"
+
     sections = [
         (
             "<task>"
             "You are verifying that every idea/point/concept/argument/detail/url/[[wikilink]]/diagram etc. "
-            "from the provided notes chunk has been integrated into the updated document body."
-            " Use the patch replacements to understand what will be inserted or rewritten in the document."
-            " Cross-check the notes against the updated body text as well; if a point already exists in the body,"
-            " treat it as covered even if no patch replacement references it."
+            "from the provided notes chunk has been integrated into the document body."
+            " Use the patch replacements to understand what will be inserted or rewritten."
+            " Duplication proofs are not edits; they are evidence of existing body text that already covers notes."
+            " Use duplication proofs as evidence of where notes are already present in the body without a patch."
+            " If a duplication proof does not fully cover the notes text, treat the missing detail as missing."
             "</task>"
         ),
         f"<notes_chunk>\n{chunk_text}\n</notes_chunk>",
         f"<patch_replacements>\n{replacements_block}\n</patch_replacements>",
-        f"<updated_body>\n{updated_body}\n</updated_body>",
+        f"<duplication_proofs>\n{duplications_block}\n</duplication_proofs>",
         f"<response_guidelines>\n{response_instructions}\n</response_guidelines>",
     ]
     prompt = "\n\n\n\n\n".join(sections)
@@ -1093,12 +1201,14 @@ def integrate_notes(
             logger.info(
                 f"Integrating chunk {chunks_completed + 1} of {total_chunks} containing {len(chunk)} paragraphs and {chunk_word_count} words."
             )
-            updated_body, patch_instructions = integrate_chunk_with_patches(
-                client,
-                resolved_grouping,
-                current_body,
-                chunk_text,
-                chunk_label,
+            updated_body, patch_instructions, duplication_proofs = (
+                integrate_chunk_with_patches(
+                    client,
+                    resolved_grouping,
+                    current_body,
+                    chunk_text,
+                    chunk_label,
+                )
             )
             patch_replacements = [
                 instruction.replace_text for instruction in patch_instructions
@@ -1106,7 +1216,7 @@ def integrate_notes(
             verification_prompt = build_verification_prompt(
                 chunk_text,
                 patch_replacements,
-                updated_body,
+                duplication_proofs,
                 chunk_label,
                 chunk_index,
                 total_chunks,
