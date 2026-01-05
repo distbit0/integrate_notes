@@ -1318,12 +1318,39 @@ def request_verification(client: OpenAI, prompt: str, context_label: str) -> str
     return execute_with_retry(perform_request, f"verification {context_label}")
 
 
-def commit_and_push_original(source_path: Path) -> None:
+def resolve_git_root(source_path: Path) -> Path:
     try:
-        subprocess.run(["git", "add", str(source_path)], check=True)
+        result = subprocess.run(
+            ["git", "-C", str(source_path.parent), "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(
+            f"Failed to locate git repository for {source_path}: {error}"
+        ) from error
+    return Path(result.stdout.strip()).resolve()
+
+
+def commit_and_push_original(source_path: Path) -> None:
+    repo_root = resolve_git_root(source_path)
+    try:
+        relative_source = source_path.resolve().relative_to(repo_root)
+    except ValueError as error:
+        raise RuntimeError(
+            f"Source file {source_path} is not within git repository {repo_root}."
+        ) from error
+
+    try:
+        subprocess.run(
+            ["git", "-C", str(repo_root), "add", str(relative_source)], check=True
+        )
         subprocess.run(
             [
                 "git",
+                "-C",
+                str(repo_root),
                 "commit",
                 "--allow-empty",
                 "-m",
@@ -1331,7 +1358,7 @@ def commit_and_push_original(source_path: Path) -> None:
             ],
             check=True,
         )
-        subprocess.run(["git", "push"], check=True)
+        subprocess.run(["git", "-C", str(repo_root), "push"], check=True)
     except subprocess.CalledProcessError as error:
         raise RuntimeError(
             f"Failed to commit and push before integration: {error}"
