@@ -69,8 +69,7 @@ INSTRUCTIONS_PROMPT = """# Instructions
 
 # Formatting
 
-- Use multiple levels of markdown headings ("#", "##", "###", "####", etc.) to express hierarchy, not just top-level headings, except if heading text is a [[wikilink]].
-    - unless existing content already employs a different convention.
+- Use multiple levels of markdown headings ("#", "##", "###", "####", etc.) to express hierarchy, not just top-level headings
 - Use "- " as the bullet prefix (not "* ", "-  ", or anything else).
     - Use four spaces for each level of bullet-point nesting.
 

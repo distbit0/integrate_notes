@@ -1,7 +1,7 @@
 - ask model to provide snippets from integrate text for each find/replace, to clarify what it intended it to integrate
     - on fail, only ask the model to provide just that single failed block instead of asking it to provide all blocks again. this is only possible once the model returns what integrated text each block relates 
 - only ask for start and end lines of search block instead of exact text. if there are multiple matches, ask model to provide a sufficient number of of lines at start or end to narrow down options to a single match. ensure that the search block which the verification prompt sees is not affected by this, by populating the SEARCH section of the block given in the verification prompt with the matching text from the file, instead of only including the start and end lines provided by the model
-- modify so that it uses tool calling + hierarchical markdown parsing to avoid needing to ever send the entire document to the model, and instead allow the model to find the relevant section(s) (could often be more than one section which should be modified even to integrate a single piece of info) to modify, and then once it has found the sections, it provides the search/replace diffs
-    - ensure that the model uses arbitrarily nested md headers, to make this approach scalable instead of only e.g. using one level of headings
-- move logs outside of src/
-- put group strat into front matter
+
+
+
+- make sure prompts mention importance of 
