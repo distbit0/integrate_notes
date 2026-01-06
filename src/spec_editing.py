@@ -69,7 +69,7 @@ INSTRUCTIONS_PROMPT = """# Instructions
 
 # Formatting
 
-- Use nested markdown headings ("#", "##", "###", "####", etc.) for denoting groups and sub-groups, except if heading text is a [[wikilink]].
+- Use multiple levels of markdown headings ("#", "##", "###", "####", etc.) to express hierarchy, not just top-level headings, except if heading text is a [[wikilink]].
     - unless existing content already employs a different convention.
 - Use "- " as the bullet prefix (not "* ", "-  ", or anything else).
     - Use four spaces for each level of bullet-point nesting.
@@ -254,7 +254,9 @@ def _build_whitespace_pattern(text: str, allow_zero: bool) -> re.Pattern[str]:
     return re.compile(pattern, flags=re.MULTILINE)
 
 
-def _locate_search_text(body: str, search_text: str) -> tuple[int | None, int | None, str]:
+def _locate_search_text(
+    body: str, search_text: str
+) -> tuple[int | None, int | None, str]:
     attempted_descriptions: List[str] = []
 
     index = body.find(search_text)
@@ -331,7 +333,9 @@ def _locate_search_text(body: str, search_text: str) -> tuple[int | None, int | 
             match = matches[0]
             return match.start(), match.end(), ""
 
-    reason = "SEARCH text not found after attempts: " + ", ".join(attempted_descriptions)
+    reason = "SEARCH text not found after attempts: " + ", ".join(
+        attempted_descriptions
+    )
     return None, None, reason
 
 
@@ -343,7 +347,10 @@ def apply_edits(
     file_contents: Dict[Path, str],
     edits: List[EditInstruction],
 ) -> tuple[EditApplication | None, List[EditFailure]]:
-    updated_contents = {path: _normalize_line_endings(content) for path, content in file_contents.items()}
+    updated_contents = {
+        path: _normalize_line_endings(content)
+        for path, content in file_contents.items()
+    }
     failures: List[EditFailure] = []
     patch_replacements: List[str] = []
     duplicate_texts: List[str] = []
@@ -365,7 +372,9 @@ def apply_edits(
             duplicate_texts.append(edit.find_text)
             continue
         replacement = edit.replace_text or ""
-        updated_contents[edit.file_path] = _replace_slice(content, start, end, replacement)
+        updated_contents[edit.file_path] = _replace_slice(
+            content, start, end, replacement
+        )
         patch_replacements.append(replacement)
 
     if failures:
@@ -408,9 +417,7 @@ def request_and_apply_edits(
         except Exception as error:  # noqa: BLE001
             failed_formatting = str(error)
             failed_edits = None
-            logger.warning(
-                f"Edit response invalid for {attempt_label}: {error}"
-            )
+            logger.warning(f"Edit response invalid for {attempt_label}: {error}")
             continue
 
         failed_formatting = None
