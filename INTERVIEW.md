@@ -90,3 +90,12 @@ concurrency is desired for any api calls.
 
 
 also pls split up the code, including the existing logic, across multiple semantically-meaningful files each focusing on a different area, as the current file is wayy too long.
+
+## Follow-ups
+> You asked to keep the old `integrate_notes.py` untouched but also to split the existing logic into multiple files. Which should take priority: (a) leave `integrate_notes.py` as-is and only add new modules for the SPEC flow, or (b) refactor the existing logic into multiple files while keeping behavior unchanged?
+
+keep the old one. but duplicate it and refactor + implement new logic in this duplicate version.
+
+> For the summary cache “outside the directory,” do you want it outside the notes directory but still inside the repo (e.g., `./.summary_cache.json`), or in a user-level cache dir (e.g., `~/.cache/integrate_notes/summary_cache.json`)? If user-level, which exact path should we use on Fedora?
+
+user level. up to you re: path
