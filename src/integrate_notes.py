@@ -201,7 +201,10 @@ def extract_grouping_section(body: str) -> tuple[GroupingSection | None, str]:
     while grouping_index < len(lines) and not lines[grouping_index].strip():
         grouping_index += 1
 
-    if grouping_index < len(lines) and lines[grouping_index].strip() == GROUPING_BLOCK_START:
+    if (
+        grouping_index < len(lines)
+        and lines[grouping_index].strip() == GROUPING_BLOCK_START
+    ):
         end_index = grouping_index + 1
         while end_index < len(lines) and lines[end_index].strip() != GROUPING_BLOCK_END:
             end_index += 1
@@ -242,7 +245,9 @@ def _format_grouping_block(grouping_text: str) -> str:
 
 
 def render_grouping_section(
-    grouping_text: str, existing_section: GroupingSection | None, preserve_existing: bool
+    grouping_text: str,
+    existing_section: GroupingSection | None,
+    preserve_existing: bool,
 ) -> str:
     if not grouping_text.strip():
         raise ValueError("Grouping approach cannot be empty.")
@@ -287,7 +292,7 @@ def prompt_for_grouping() -> str:
         f"{GROUPING_PREFIX} at the top of the document.\n"
         "Enter multiline text and finish with a single line containing only a '.'.\n"
         "Examples:\n"
-        "- Grouping approach: Group points according to what problem each idea/proposal/mechanism/concept addresses/are trying to solve, which you will need to figure out yourself based on context. Do not combine multiple goals/problems into one group. Keep goals/problems specific. Ensure groups are mutually exclusive and collectively exhaustive. Avoid overlap between group's goals/problems. sub-headings should be per-mechanism/per-solution i.e. according to which \"idea\"/solution each point relates to.\n"
+        '- Grouping approach: Group points according to what problem each idea/proposal/mechanism/concept addresses/are trying to solve, which you will need to figure out yourself based on context. Do not combine multiple goals/problems into one group. Keep goals/problems specific. Ensure groups are mutually exclusive and collectively exhaustive. Avoid overlap between group\'s goals/problems. sub-headings should be per-mechanism/per-solution i.e. according to which "idea"/solution each point relates to.\n'
         "- Group points according to what you think the most useful/interesting/relevant groupings are. Ensure similar, related and contradictory points are adjacent.\n"
         "Your input:\n"
     )
@@ -1391,7 +1396,9 @@ def integrate_notes(
     source_body, source_scratchpad = split_document_sections(source_content)
     grouping_section, working_body = extract_grouping_section(source_body)
 
-    resolved_grouping = grouping or (grouping_section.text if grouping_section else None)
+    resolved_grouping = grouping or (
+        grouping_section.text if grouping_section else None
+    )
     if not resolved_grouping:
         resolved_grouping = prompt_for_grouping()
         logger.info("Recorded new grouping approach from user input.")
