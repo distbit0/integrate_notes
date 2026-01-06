@@ -38,6 +38,50 @@ EDIT_TOOL_SCHEMA = {
     },
 }
 
+INSTRUCTIONS_PROMPT = """# Instructions
+
+- Integrate the provided notes into the checked-out files.
+- Ensure related points are adjacent.
+- Break content into relatively atomic bullet points; each bullet should express one idea.
+- Use nested bullets when a point is naturally a sub-point of another.
+- Make minor grammar edits as needed so ideas read cleanly as bullet points.
+- If text to integrate is already well-formatted, punctuated, grammatical and bullet-pointed, avoid altering its wording while integrating/inserting it.
+- De-duplicate overlapping points without losing any nuance or detail.
+- Keep wording succinct and remove filler words (e.g., "you know", "basically", "essentially", "uh").
+- Add new headings, sub-headings, or parent bullet points for new items, and reuse existing ones where appropriate.
+- Refactor existing content as needed to smoothly integrate the new notes.
+
+
+# Rules
+
+- PRESERVE/DO NOT LEAVE OUT ANY NUANCE, DETAILS, POINTS, CONCLUSIONS, IDEAS, ARGUMENTS, OR QUALIFICATIONS from the notes.
+- PRESERVE ALL EXPLANATIONS FROM THE NOTES.
+- Do not materially alter meaning.
+- If new items do not match existing items in the checked-out files, add them appropriately.
+- Preserve questions as questions; do not convert them into statements.
+- Do not guess acronym expansions if they are not specified.
+- Do not modify tone (e.g., confidence/certainty) or add hedging.
+- Do not omit any wikilinks, URLs, diagrams, ASCII art, mathematics, tables, figures, or other non-text content.
+- Move each link/URL/etc. to the section where it is most relevant based on its surrounding context and its URL text.
+    - Do not move links to a separate "resources" or "links" section.
+- Do not modify any wikilinks or URLs.
+
+
+# Formatting
+
+- Use nested markdown headings ("#", "##", "###", "####", etc.) for denoting groups and sub-groups, except if heading text is a [[wikilink]].
+    - unless existing content already employs a different convention.
+- Use "- " as the bullet prefix (not "* ", "-  ", or anything else).
+    - Use four spaces for each level of bullet-point nesting.
+
+
+# Before finishing: check your work
+
+- Confirm every item from the provided notes is now represented in the checked-out files without loss of detail.
+- Ensure nothing from the original checked-out files was lost.
+- If anything is missing, integrate it in appropriately.
+"""
+
 
 @dataclass(frozen=True)
 class EditInstruction:
@@ -88,7 +132,7 @@ def build_edit_prompt(
 
     prompt = (
         "<instructions>\n"
-        f"{instructions}\n"
+        f"{instructions}\n\n{INSTRUCTIONS_PROMPT.strip()}\n"
         "</instructions>\n\n"
         "<notes_chunk>\n"
         f"{chunk_text}\n"
