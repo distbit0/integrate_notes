@@ -111,56 +111,59 @@ class SummaryService:
         self._cache.invalidate(path)
 
     def get_summaries(self, paths: Iterable[Path]) -> Dict[Path, str]:
-        futures = {path: self._ensure_future(path) for path in paths}
-        return {path: future.result() for path, future in futures.items()}
+        unique_paths = list(dict.fromkeys(paths))
+        standard_paths: List[Path] = []
+        index_paths: List[Path] = []
+        for path in unique_paths:
+            if self._repo.is_index_note(path, self._config.index_filename_suffix):
+                index_paths.append(path)
+            else:
+                standard_paths.append(path)
+
+        futures = {path: self._ensure_future(path) for path in standard_paths}
+        summaries: Dict[Path, str] = {
+            path: future.result() for path, future in futures.items()
+        }
+
+        for path in index_paths:
+            summaries[path] = self._compute_index_summary(path, stack=[])
+
+        return summaries
 
     def get_summary(self, path: Path) -> str:
+        if self._repo.is_index_note(path, self._config.index_filename_suffix):
+            return self._compute_index_summary(path, stack=[])
         return self._ensure_future(path).result()
 
     def _ensure_future(self, path: Path) -> Future[str]:
+        if self._repo.is_index_note(path, self._config.index_filename_suffix):
+            raise RuntimeError(
+                f"Index note summaries must be computed synchronously: {path.name}."
+            )
         with self._lock:
             existing = self._inflight.get(path)
             if existing is not None:
                 return existing
-            future: Future[str] = self._executor.submit(self._compute_summary, path)
+            future: Future[str] = self._executor.submit(
+                self._compute_standard_summary, path
+            )
             self._inflight[path] = future
             return future
 
-    def _compute_summary(self, path: Path) -> str:
+    def _compute_standard_summary(self, path: Path) -> str:
         try:
-            return self._compute_summary_inner(path, stack=[], allow_inflight_wait=False)
+            return self._compute_standard_summary_inner(path)
         finally:
             with self._lock:
                 self._inflight.pop(path, None)
 
-    def _compute_summary_inner(
-        self, path: Path, stack: List[Path], allow_inflight_wait: bool = True
-    ) -> str:
-        if path in stack:
-            cycle = " -> ".join(item.name for item in stack + [path])
-            raise RuntimeError(f"Cycle detected while summarizing index notes: {cycle}")
-
-        if allow_inflight_wait:
-            with self._lock:
-                inflight = self._inflight.get(path)
-            if inflight is not None:
-                return inflight.result()
-
+    def _compute_standard_summary_inner(self, path: Path) -> str:
         content = self._repo.get_note_content(path)
         content_hash = _hash_content(content)
         cached = self._cache.get(path, content_hash)
         if cached is not None:
             return cached
-
-        stack.append(path)
-        try:
-            if self._repo.is_index_note(path, self._config.index_filename_suffix):
-                summary = self._summarize_index_note(path, content, stack)
-            else:
-                summary = self._summarize_standard_note(path, content)
-        finally:
-            stack.pop()
-
+        summary = self._summarize_standard_note(path, content)
         self._cache.set(path, content_hash, summary)
         return summary
 
@@ -176,22 +179,52 @@ class SummaryService:
         )
         return request_text(self._client, prompt, f"summary {path.name}")
 
+    def _compute_index_summary(self, path: Path, stack: List[Path]) -> str:
+        if path in stack:
+            cycle = " -> ".join(item.name for item in stack + [path])
+            raise RuntimeError(f"Cycle detected while summarizing index notes: {cycle}")
+
+        content = self._repo.get_note_content(path)
+        content_hash = _hash_content(content)
+        cached = self._cache.get(path, content_hash)
+        if cached is not None:
+            return cached
+
+        stack.append(path)
+        try:
+            summary = self._summarize_index_note(path, content, stack)
+        finally:
+            stack.pop()
+
+        self._cache.set(path, content_hash, summary)
+        return summary
+
     def _summarize_index_note(self, path: Path, content: str, stack: List[Path]) -> str:
-        linked_paths = []
+        linked_paths: List[Path] = []
+        seen: set[Path] = set()
         for target in extract_wikilinks(content):
             resolved = self._repo.resolve_link(target)
-            if resolved is not None:
+            if resolved is not None and resolved not in seen:
+                seen.add(resolved)
                 linked_paths.append(resolved)
 
-        summaries: List[str] = []
+        standard_paths: List[Path] = []
+        index_paths: List[Path] = []
         for linked_path in linked_paths:
-            summaries.append(
-                self._compute_summary_inner(
-                    linked_path, stack, allow_inflight_wait=False
-                )
-            )
+            if self._repo.is_index_note(linked_path, self._config.index_filename_suffix):
+                index_paths.append(linked_path)
+            else:
+                standard_paths.append(linked_path)
 
-        joined_summaries = "\n\n".join(summaries) if summaries else "<no linked summaries>"
+        futures = {linked_path: self._ensure_future(linked_path) for linked_path in standard_paths}
+
+        summaries: List[str] = []
+        for linked_path in index_paths:
+            summaries.append(self._compute_index_summary(linked_path, stack))
+        for linked_path, future in futures.items():
+            summaries.append(future.result())
+
+        joined_summaries = "\n\n".join(summaries)
         prompt = (
             "Generate a summary based on these summaries of linked notes:\n"
             "{summaries}\n\n"

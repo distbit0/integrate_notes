@@ -51,10 +51,9 @@ class ExplorationError(RuntimeError):
 
 
 def format_viewed_note(note: ViewedNote) -> str:
-    headings = "\n".join(f"- {heading}" for heading in note.headings) or "- <no headings>"
-    links = (
-        "\n".join(f"- [[{path.name}]] — {summary}" for path, summary in note.link_summaries)
-        or "- <no links>"
+    headings = "\n".join(f"- {heading}" for heading in note.headings)
+    links = "\n".join(
+        f"- [[{path.name}]] — {summary}" for path, summary in note.link_summaries
     )
     return (
         f"## [{note.path.name}]\n\n"
@@ -107,6 +106,33 @@ def build_exploration_prompt(
     return prompt
 
 
+def _normalize_file_name(value: str) -> str:
+    trimmed = value.strip()
+    if trimmed.startswith("[[") and trimmed.endswith("]]"):
+        trimmed = trimmed[2:-2].strip()
+    if "|" in trimmed:
+        trimmed = trimmed.split("|", 1)[0].strip()
+    if "#" in trimmed:
+        trimmed = trimmed.split("#", 1)[0].strip()
+    if not trimmed:
+        raise ExplorationError("File reference cannot be empty.")
+    if not trimmed.lower().endswith(".md"):
+        trimmed = f"{trimmed}.md"
+    return trimmed
+
+
+def _dedupe_preserve_order(values: Iterable[str]) -> List[str]:
+    seen: set[str] = set()
+    result: List[str] = []
+    for value in values:
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
+
+
 def _parse_file_list(payload: dict, action: str) -> List[str]:
     if payload.get("action") != action:
         raise ExplorationError(f"Tool payload must include action='{action}'.")
@@ -117,8 +143,8 @@ def _parse_file_list(payload: dict, action: str) -> List[str]:
     for value in files:
         if not isinstance(value, str) or not value.strip():
             raise ExplorationError("Each file entry must be a non-empty string.")
-        file_names.append(value.strip())
-    return file_names
+        file_names.append(_normalize_file_name(value))
+    return _dedupe_preserve_order(file_names)
 
 
 def _resolve_requested_paths(
