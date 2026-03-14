@@ -95,3 +95,4 @@ src/pending_verification_prompts.json
 
 src/logs/*
 logs/*
+**/node_modules/
