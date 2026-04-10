@@ -14,6 +14,7 @@ from uuid import uuid4
 import shutil
 import subprocess
 
+from dotenv import load_dotenv
 from loguru import logger
 from openai import OpenAI
 
@@ -23,7 +24,9 @@ GROUPING_BLOCK_START = "<!-- GROUPING APPROACH START -->"
 GROUPING_BLOCK_END = "<!-- GROUPING APPROACH END -->"
 DEFAULT_CHUNK_PARAGRAPHS = 30
 DEFAULT_CHUNK_MAX_WORDS = 400
-ENV_API_KEY = "OPENAI_API_KEY"
+ENV_API_KEY = "OPENROUTER_API_KEY"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_MODEL = "openai/gpt-5.4"
 DEFAULT_MAX_RETRIES = 3
 RETRY_INITIAL_DELAY_SECONDS = 2.0
 RETRY_BACKOFF_FACTOR = 2.0
@@ -392,13 +395,33 @@ def chunk_paragraphs(
     return chunks
 
 
-def create_openai_client() -> OpenAI:
+def create_openrouter_client() -> OpenAI:
+    load_dotenv()
     api_key = os.getenv(ENV_API_KEY)
     if not api_key:
         raise RuntimeError(
             f"Environment variable {ENV_API_KEY} is required for GPT access."
         )
-    return OpenAI(api_key=api_key)
+    return OpenAI(api_key=api_key, base_url=OPENROUTER_BASE_URL)
+
+
+def _message_text(message) -> str:
+    content = message.content
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+            else:
+                text = getattr(item, "text", None)
+            if isinstance(text, str):
+                parts.append(text)
+        return "".join(parts)
+    return str(content)
 
 
 NOTIFY_SEND_PATH = shutil.which("notify-send")
@@ -449,11 +472,11 @@ def execute_with_retry(
         except Exception as error:
             if attempt >= max_attempts:
                 logger.exception(
-                    f"OpenAI {description} failed after {max_attempts} attempt(s): {error}"
+                    f"OpenRouter {description} failed after {max_attempts} attempt(s): {error}"
                 )
                 raise
             logger.warning(
-                f"OpenAI {description} attempt {attempt} failed: {error}. Retrying in {delay:.1f}s."
+                f"OpenRouter {description} attempt {attempt} failed: {error}. Retrying in {delay:.1f}s."
             )
             sleep(delay)
             attempt += 1
@@ -541,12 +564,11 @@ def build_integration_prompt(
 
 def request_integration(client: OpenAI, prompt: str, context_label: str) -> str:
     def perform_request() -> str:
-        response = client.responses.create(
-            model="gpt-5.2",
-            reasoning={"effort": "medium"},
-            input=prompt,
+        response = client.chat.completions.create(
+            model=DEFAULT_MODEL,
+            messages=[{"role": "user", "content": prompt}],
         )
-        output_text = response.output_text
+        output_text = _message_text(response.choices[0].message)
         if not output_text.strip():
             raise RuntimeError("Received empty response from GPT integration call.")
         patch_text = extract_patch_text_from_response(output_text)
@@ -1310,12 +1332,11 @@ def build_verification_prompt(
 
 def request_verification(client: OpenAI, prompt: str, context_label: str) -> str:
     def perform_request() -> str:
-        response = client.responses.create(
-            model="gpt-5.2",
-            reasoning={"effort": "medium"},
-            input=prompt,
+        response = client.chat.completions.create(
+            model=DEFAULT_MODEL,
+            messages=[{"role": "user", "content": prompt}],
         )
-        output_text = response.output_text
+        output_text = _message_text(response.choices[0].message)
         if not output_text.strip():
             raise RuntimeError("Received empty response from GPT verification call.")
         return output_text.strip()
@@ -1410,7 +1431,7 @@ def integrate_notes(
     )
     commit_and_push_original(source_path)
     scratchpad_paragraphs = normalize_paragraphs(source_scratchpad)
-    client = create_openai_client()
+    client = create_openrouter_client()
     verification_manager = (
         None if disable_verification else VerificationManager(client, source_path)
     )

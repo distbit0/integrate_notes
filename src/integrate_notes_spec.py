@@ -18,7 +18,7 @@ from spec_config import (
 )
 from spec_editing import request_and_apply_edits
 from spec_exploration import explore_until_checkout
-from spec_llm import create_openai_client
+from spec_llm import create_openrouter_client
 from spec_logging import configure_logging
 from spec_markdown import (
     build_document,
@@ -124,7 +124,7 @@ def integrate_notes_spec(source_path: Path, disable_verification: bool) -> Path:
     scratchpad_paragraphs = normalize_paragraphs(source_scratchpad)
 
     repo = NoteRepository(source_path, source_body, source_path.parent)
-    client = create_openai_client()
+    client = create_openrouter_client()
     summaries = SummaryService(repo, client, config)
     verification_manager = (
         None if disable_verification else VerificationManager(client, source_path)
