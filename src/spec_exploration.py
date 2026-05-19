@@ -6,7 +6,7 @@ from typing import Dict, Iterable, List, Tuple
 
 from spec_config import MAX_TOOL_ATTEMPTS, SpecConfig
 from spec_llm import parse_tool_call_arguments, request_tool_call
-from spec_notes import NoteRepository, ViewedNote
+from spec_notes import NoteRepository, ViewedNote, note_slug, readable_note_title
 
 
 VIEW_TOOL_SCHEMA = {
@@ -53,7 +53,7 @@ class ExplorationError(RuntimeError):
 def format_viewed_note(note: ViewedNote) -> str:
     headings = "\n".join(f"- {heading}" for heading in note.headings)
     links = "\n".join(
-        f"- [[{path.name}]] — {summary}" for path, summary in note.link_summaries
+        f"- [[{readable_note_title(path)}]] — {summary}" for path, summary in note.link_summaries
     )
     return (
         f"## [{note.path.name}]\n\n"
@@ -64,7 +64,7 @@ def format_viewed_note(note: ViewedNote) -> str:
 
 
 def format_available_note(path: Path, summary: str) -> str:
-    return f"- [[{path.name}]] — {summary}"
+    return f"- [[{readable_note_title(path)}]] — {summary}"
 
 
 def build_exploration_prompt(
@@ -125,7 +125,7 @@ def _dedupe_preserve_order(values: Iterable[str]) -> List[str]:
     seen: set[str] = set()
     result: List[str] = []
     for value in values:
-        key = value.lower()
+        key = note_slug(value)
         if key in seen:
             continue
         seen.add(key)
@@ -154,7 +154,7 @@ def _resolve_requested_paths(
 ) -> List[Path]:
     resolved: List[Path] = []
     for name in names:
-        key = name.lower()
+        key = note_slug(name)
         path = mapping.get(key)
         if path is None:
             raise ExplorationError(f"Requested {label} file '{name}' is not available.")
@@ -220,7 +220,7 @@ def explore_until_checkout(
                         raise ExplorationError(
                             "Checkout request exceeds max files allowed."
                         )
-                    view_map = {path.name.lower(): path for path in viewed.keys()}
+                    view_map = {note_slug(path.name): path for path in viewed.keys()}
                     checkout_paths = _resolve_requested_paths(
                         requested, view_map, "viewed"
                     )
@@ -235,7 +235,7 @@ def explore_until_checkout(
                 requested = _parse_file_list(payload, "view")
                 if len(requested) > config.max_files_viewed_per_round:
                     raise ExplorationError("View request exceeds max files allowed.")
-                available_map = {path.name.lower(): path for path in available.keys()}
+                available_map = {note_slug(path.name): path for path in available.keys()}
                 requested_paths = _resolve_requested_paths(
                     requested, available_map, "available"
                 )

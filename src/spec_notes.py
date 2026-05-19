@@ -7,6 +7,29 @@ from typing import Dict, Iterable, List, Optional, Set
 from spec_markdown import count_words, extract_headings, extract_wikilinks
 
 
+def note_slug(value: str) -> str:
+    stem = Path(value.strip()).name
+    if stem.lower().endswith(".md"):
+        stem = stem[:-3]
+    if "#" in stem:
+        stem = stem.split("#", 1)[0]
+
+    slug_chars: List[str] = []
+    previous_was_separator = False
+    for character in stem.lower():
+        if character.isalnum():
+            slug_chars.append(character)
+            previous_was_separator = False
+        elif not previous_was_separator:
+            slug_chars.append("-")
+            previous_was_separator = True
+    return "".join(slug_chars).strip("-")
+
+
+def readable_note_title(path: Path) -> str:
+    return path.stem.replace("-", " ")
+
+
 @dataclass(frozen=True)
 class ViewedNote:
     path: Path
@@ -28,16 +51,14 @@ class NoteRepository:
         mapping: Dict[str, Path] = {}
         for path in self._notes_dir.iterdir():
             if path.is_file() and path.suffix.lower() == ".md":
-                mapping[path.name.lower()] = path
+                mapping[note_slug(path.name)] = path
         return mapping
 
     def resolve_link(self, link_text: str) -> Optional[Path]:
         target = link_text.strip()
         if not target:
             return None
-        if not target.lower().endswith(".md"):
-            target = f"{target}.md"
-        return self._file_index.get(target.lower())
+        return self._file_index.get(note_slug(target))
 
     def get_note_content(self, path: Path) -> str:
         if path == self._root_path:
