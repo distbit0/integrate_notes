@@ -396,7 +396,7 @@ def chunk_paragraphs(
 
 
 def create_openrouter_client() -> OpenAI:
-    load_dotenv()
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
     api_key = os.getenv(ENV_API_KEY)
     if not api_key:
         raise RuntimeError(

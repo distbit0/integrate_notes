@@ -17,6 +17,7 @@ from spec_config import (
     OPENROUTER_BASE_URL,
     RETRY_BACKOFF_FACTOR,
     RETRY_INITIAL_DELAY_SECONDS,
+    repo_root,
 )
 
 
@@ -27,7 +28,7 @@ class ToolCall:
 
 
 def create_openrouter_client() -> OpenAI:
-    load_dotenv()
+    load_dotenv(repo_root() / ".env", override=True)
     api_key = os.getenv(ENV_API_KEY)
     if not api_key:
         raise RuntimeError(
