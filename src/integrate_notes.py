@@ -19,9 +19,10 @@ from loguru import logger
 from openai import OpenAI
 
 SCRATCHPAD_HEADING = "# -- SCRATCHPAD"
-GROUPING_PREFIX = "Grouping approach: "
-GROUPING_BLOCK_START = "<!-- GROUPING APPROACH START -->"
-GROUPING_BLOCK_END = "<!-- GROUPING APPROACH END -->"
+GROUPING_FIELD = "grouping"
+ORGANISE_FIELD = "organise"
+CONTINUOUS_ORGANISE_VALUE = "continuous"
+DEFAULT_NOTES_ROOT = Path("/home/pimania/notes")
 DEFAULT_CHUNK_PARAGRAPHS = 30
 DEFAULT_CHUNK_MAX_WORDS = 400
 ENV_API_KEY = "OPENROUTER_API_KEY"
@@ -119,7 +120,17 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--grouping",
         required=False,
-        help="Grouping approach to record at the top of the document.",
+        help="Grouping approach to record in frontmatter.",
+    )
+    parser.add_argument(
+        "--continuous",
+        action="store_true",
+        help="Integrate all notes marked organise: continuous with non-empty scratchpads.",
+    )
+    parser.add_argument(
+        "--notes-root",
+        default=str(DEFAULT_NOTES_ROOT),
+        help="Notes vault root for --continuous scans.",
     )
     parser.add_argument(
         "--chunk-size",
@@ -165,137 +176,109 @@ def split_document_sections(content: str) -> Tuple[str, str]:
     return body, scratchpad
 
 
-@dataclass(frozen=True)
-class GroupingSection:
-    text: str
-    raw: str
-    format: str
-
-
-def _find_front_matter_end_index(lines: List[str]) -> int:
-    index = 0
-    total_lines = len(lines)
-    while index < total_lines and not lines[index].strip():
-        index += 1
-    if index < total_lines and lines[index].strip() == "---":
-        index += 1
-        while index < total_lines and lines[index].strip() != "---":
-            index += 1
-        if index < total_lines:
-            index += 1
-    return index
-
-
-def _extract_grouping_from_line(line: str) -> str | None:
-    stripped = line.lstrip()
-    if not stripped.lower().startswith(GROUPING_PREFIX.lower()):
+def split_frontmatter(content: str) -> tuple[list[str], str] | None:
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != "---":
         return None
-    prefix_length = len(GROUPING_PREFIX)
-    return stripped[prefix_length:]
+    for index, line in enumerate(lines[1:], start=1):
+        if line == "---":
+            body = "\n".join(lines[index + 1 :])
+            if content.endswith("\n"):
+                body += "\n"
+            return lines[1:index], body
+    raise ValueError("Frontmatter starts with '---' but has no closing delimiter.")
 
 
-def extract_grouping_section(body: str) -> tuple[GroupingSection | None, str]:
-    lines = body.splitlines()
-    if not lines:
-        return None, body
-
-    start_index = _find_front_matter_end_index(lines)
-    grouping_index = start_index
-    while grouping_index < len(lines) and not lines[grouping_index].strip():
-        grouping_index += 1
-
-    if (
-        grouping_index < len(lines)
-        and lines[grouping_index].strip() == GROUPING_BLOCK_START
-    ):
-        end_index = grouping_index + 1
-        while end_index < len(lines) and lines[end_index].strip() != GROUPING_BLOCK_END:
-            end_index += 1
-        if end_index >= len(lines):
-            raise ValueError(
-                f"Grouping approach block is missing the end marker '{GROUPING_BLOCK_END}'."
-            )
-        grouping_lines = lines[grouping_index + 1 : end_index]
-        raw_block = "\n".join(lines[grouping_index : end_index + 1])
-        grouping_text = "\n".join(grouping_lines)
-        removal_end = end_index + 1
-        if removal_end < len(lines) and not lines[removal_end].strip():
-            removal_end += 1
-        remaining_lines = lines[:grouping_index] + lines[removal_end:]
-        return GroupingSection(
-            text=grouping_text, raw=raw_block, format="block"
-        ), "\n".join(remaining_lines)
-
-    if grouping_index < len(lines):
-        grouping_text = _extract_grouping_from_line(lines[grouping_index])
-        if grouping_text is not None:
-            raw_line = lines[grouping_index]
-            removal_end = grouping_index + 1
-            if removal_end < len(lines) and not lines[removal_end].strip():
-                removal_end += 1
-            remaining_lines = lines[:grouping_index] + lines[removal_end:]
-            return GroupingSection(
-                text=grouping_text, raw=raw_line, format="legacy"
-            ), "\n".join(remaining_lines)
-
-    return None, body
+def _is_top_level_field(line: str) -> bool:
+    return bool(line.strip()) and not line.startswith((" ", "\t", "-")) and ":" in line
 
 
-def _format_grouping_block(grouping_text: str) -> str:
-    if grouping_text.endswith("\n"):
-        return f"{GROUPING_BLOCK_START}\n{grouping_text}{GROUPING_BLOCK_END}"
-    return f"{GROUPING_BLOCK_START}\n{grouping_text}\n{GROUPING_BLOCK_END}"
+def read_frontmatter_field(content: str, field_name: str) -> str | None:
+    frontmatter_parts = split_frontmatter(content)
+    if frontmatter_parts is None:
+        return None
+
+    metadata_lines, _ = frontmatter_parts
+    field_prefix = f"{field_name}:"
+    for index, line in enumerate(metadata_lines):
+        if not line.startswith(field_prefix):
+            continue
+        raw_value = line.split(":", 1)[1].strip()
+        if raw_value in {"|", "|-", "|+", ">", ">-", ">+"}:
+            block_lines: list[str] = []
+            for block_line in metadata_lines[index + 1 :]:
+                if _is_top_level_field(block_line):
+                    break
+                block_lines.append(
+                    block_line[2:] if block_line.startswith("  ") else block_line
+                )
+            return "\n".join(block_lines).strip("\n")
+        return raw_value.strip("\"'")
+    return None
 
 
-def render_grouping_section(
-    grouping_text: str,
-    existing_section: GroupingSection | None,
-    preserve_existing: bool,
-) -> str:
-    if not grouping_text.strip():
-        raise ValueError("Grouping approach cannot be empty.")
-
-    if preserve_existing and existing_section is not None:
-        return existing_section.raw
-
-    target_format = existing_section.format if existing_section else "block"
-    if target_format == "legacy":
-        if "\n" in grouping_text:
-            raise ValueError(
-                "Legacy 'Grouping approach:' format does not support multiline content. "
-                "Remove the legacy line or add a grouping block instead."
-            )
-        return f"{GROUPING_PREFIX}{grouping_text}"
-    if target_format == "block":
-        return _format_grouping_block(grouping_text)
-    raise ValueError(f"Unknown grouping format: {target_format}")
+def _skip_frontmatter_field(lines: list[str], start_index: int) -> int:
+    line = lines[start_index]
+    value = line.split(":", 1)[1].strip()
+    next_index = start_index + 1
+    if value in {"|", "|-", "|+", ">", ">-", ">+"}:
+        while next_index < len(lines) and not _is_top_level_field(lines[next_index]):
+            next_index += 1
+    return next_index
 
 
-def insert_grouping_section(body: str, grouping_section: str | None) -> str:
-    if not grouping_section:
-        return body
+def _without_frontmatter_field(lines: list[str], field_name: str) -> list[str]:
+    filtered: list[str] = []
+    index = 0
+    field_prefix = f"{field_name}:"
+    while index < len(lines):
+        if lines[index].startswith(field_prefix):
+            index = _skip_frontmatter_field(lines, index)
+            continue
+        filtered.append(lines[index])
+        index += 1
+    return filtered
 
-    lines = body.splitlines()
-    insertion_index = _find_front_matter_end_index(lines)
-    while insertion_index < len(lines) and not lines[insertion_index].strip():
-        insertion_index += 1
 
-    grouping_lines = grouping_section.splitlines()
-    lines[insertion_index:insertion_index] = grouping_lines
-    next_index = insertion_index + len(grouping_lines)
-    if next_index < len(lines) and lines[next_index].strip():
-        lines.insert(next_index, "")
+def _render_block_field(field_name: str, value: str) -> list[str]:
+    stripped_value = value.strip()
+    if not stripped_value:
+        raise ValueError(f"{field_name} cannot be empty.")
+    return [f"{field_name}: |"] + [
+        f"  {line}" if line else "" for line in stripped_value.splitlines()
+    ]
 
-    return "\n".join(lines)
+
+def set_frontmatter_block_field(content: str, field_name: str, value: str) -> str:
+    frontmatter_parts = split_frontmatter(content)
+    if frontmatter_parts is None:
+        metadata_lines: list[str] = []
+        body = content
+    else:
+        metadata_lines, body = frontmatter_parts
+
+    updated_metadata = _without_frontmatter_field(metadata_lines, field_name)
+    if updated_metadata and updated_metadata[-1].strip():
+        updated_metadata.append("")
+    updated_metadata.extend(_render_block_field(field_name, value))
+
+    frontmatter = "\n".join(updated_metadata).rstrip()
+    body = body.lstrip("\n")
+    return f"---\n{frontmatter}\n---\n{body}"
+
+
+def frontmatter_field_equals(content: str, field_name: str, value: str) -> bool:
+    field_value = read_frontmatter_field(content, field_name)
+    return field_value is not None and field_value.strip().lower() == value
 
 
 def prompt_for_grouping() -> str:
     prompt = (
-        "Grouping not found. Provide the text that should follow "
-        f"{GROUPING_PREFIX} at the top of the document.\n"
+        "Grouping not found. Provide the text for the frontmatter "
+        f"{GROUPING_FIELD} field.\n"
         "Enter multiline text and finish with a single line containing only a '.'.\n"
         "Examples:\n"
-        '- Grouping approach: Group points according to what problem each idea/proposal/mechanism/concept addresses/are trying to solve, which you will need to figure out yourself based on context. Do not combine multiple goals/problems into one group. Keep goals/problems specific. Ensure groups are mutually exclusive and collectively exhaustive. Avoid overlap between group\'s goals/problems. sub-headings should be per-mechanism/per-solution i.e. according to which "idea"/solution each point relates to.\n'
+        '- Group points according to what problem each idea/proposal/mechanism/concept addresses/are trying to solve, which you will need to figure out yourself based on context. Do not combine multiple goals/problems into one group. Keep goals/problems specific. Ensure groups are mutually exclusive and collectively exhaustive. Avoid overlap between group\'s goals/problems. sub-headings should be per-mechanism/per-solution i.e. according to which "idea"/solution each point relates to.\n'
         "- Group points according to what you think the most useful/interesting/relevant groupings are. Ensure similar, related and contradictory points are adjacent.\n"
         "Your input:\n"
     )
@@ -1036,11 +1019,8 @@ def integrate_chunk_with_patches(
     )
 
 
-def build_document(
-    body: str, grouping_section: str | None, remaining_paragraphs: List[str]
-) -> str:
-    body_with_grouping = insert_grouping_section(body, grouping_section)
-    trimmed_body = body_with_grouping.rstrip()
+def build_document(body: str, remaining_paragraphs: List[str]) -> str:
+    trimmed_body = body.rstrip()
     document_parts = [trimmed_body, SCRATCHPAD_HEADING]
     if remaining_paragraphs:
         scratchpad_text = "\n\n".join(remaining_paragraphs).rstrip()
@@ -1415,19 +1395,15 @@ def integrate_notes(
 ) -> Path:
     source_content = source_path.read_text(encoding="utf-8")
     source_body, source_scratchpad = split_document_sections(source_content)
-    grouping_section, working_body = extract_grouping_section(source_body)
-
-    resolved_grouping = grouping or (
-        grouping_section.text if grouping_section else None
-    )
+    resolved_grouping = grouping or read_frontmatter_field(source_body, GROUPING_FIELD)
     if not resolved_grouping:
         resolved_grouping = prompt_for_grouping()
         logger.info("Recorded new grouping approach from user input.")
 
-    grouping_section_text = render_grouping_section(
-        resolved_grouping,
-        grouping_section,
-        preserve_existing=grouping is None and grouping_section is not None,
+    working_body = (
+        source_body
+        if grouping is None and read_frontmatter_field(source_body, GROUPING_FIELD)
+        else set_frontmatter_block_field(source_body, GROUPING_FIELD, resolved_grouping)
     )
     commit_and_push_original(source_path)
     scratchpad_paragraphs = normalize_paragraphs(source_scratchpad)
@@ -1442,7 +1418,7 @@ def integrate_notes(
                 "No scratchpad notes to integrate; ensuring scratchpad heading remains present."
             )
             source_path.write_text(
-                build_document(working_body, grouping_section_text, []),
+                build_document(working_body, []),
                 encoding="utf-8",
             )
             return source_path
@@ -1507,9 +1483,7 @@ def integrate_notes(
                 source_path, last_written_remaining
             )
             remaining_paragraphs = refreshed_paragraphs[len(chunk) :]
-            integrated_document = build_document(
-                current_body, grouping_section_text, remaining_paragraphs
-            )
+            integrated_document = build_document(current_body, remaining_paragraphs)
             source_path.write_text(integrated_document, encoding="utf-8")
             logger.info(
                 f'Chunk {chunks_completed + 1} integration written to "{source_path}".'
@@ -1533,21 +1507,77 @@ def integrate_notes(
             verification_manager.shutdown()
 
 
+def continuous_organise_paths(notes_root: Path) -> list[Path]:
+    if not notes_root.exists():
+        raise FileNotFoundError(f"Notes root not found: {notes_root}")
+    if not notes_root.is_dir():
+        raise NotADirectoryError(f"Notes root is not a directory: {notes_root}")
+
+    paths: list[Path] = []
+    for path in sorted(notes_root.rglob("*.md")):
+        if any(part.startswith(".") for part in path.relative_to(notes_root).parts):
+            continue
+        content = path.read_text(encoding="utf-8")
+        if not frontmatter_field_equals(
+            content, ORGANISE_FIELD, CONTINUOUS_ORGANISE_VALUE
+        ):
+            continue
+        _, scratchpad = split_document_sections(content)
+        if normalize_paragraphs(scratchpad):
+            if not read_frontmatter_field(content, GROUPING_FIELD):
+                raise RuntimeError(
+                    f"{path} is marked {ORGANISE_FIELD}: {CONTINUOUS_ORGANISE_VALUE} "
+                    f"but has no {GROUPING_FIELD} frontmatter."
+                )
+            paths.append(path)
+    return paths
+
+
+def integrate_continuous_notes(
+    notes_root: Path,
+    max_paragraphs_per_chunk: int,
+    max_words_per_chunk: int,
+    disable_verification: bool,
+) -> list[Path]:
+    source_paths = continuous_organise_paths(notes_root)
+    for source_path in source_paths:
+        logger.info(f"Integrating continuously organised note {source_path}.")
+        integrate_notes(
+            source_path,
+            grouping=None,
+            max_paragraphs_per_chunk=max_paragraphs_per_chunk,
+            max_words_per_chunk=max_words_per_chunk,
+            disable_verification=disable_verification,
+        )
+    return source_paths
+
+
 def main() -> None:
     configure_logging()
     try:
         args = parse_arguments()
-        source_path = resolve_source_path(args.source)
-        integrated_path = integrate_notes(
-            source_path,
-            args.grouping,
-            args.chunk_size,
-            args.max_chunk_words,
-            args.disable_verification,
-        )
-        logger.info(
-            f"Integration completed. Updated document available at {integrated_path}."
-        )
+        if args.continuous:
+            integrated_paths = integrate_continuous_notes(
+                Path(args.notes_root).expanduser().resolve(),
+                args.chunk_size,
+                args.max_chunk_words,
+                args.disable_verification,
+            )
+            logger.info(
+                f"Continuous integration completed for {len(integrated_paths)} note(s)."
+            )
+        else:
+            source_path = resolve_source_path(args.source)
+            integrated_path = integrate_notes(
+                source_path,
+                args.grouping,
+                args.chunk_size,
+                args.max_chunk_words,
+                args.disable_verification,
+            )
+            logger.info(
+                f"Integration completed. Updated document available at {integrated_path}."
+            )
     except Exception as error:
         logger.exception(f"Integration failed: {error}")
         sys.exit(1)

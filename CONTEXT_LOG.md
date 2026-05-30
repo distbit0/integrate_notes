@@ -8,3 +8,7 @@
 ## Notes filename slug migration
 
 - The notes vault uses hyphen-slug filenames while keeping readable wikilinks. Note resolution and exploration file selection should compare by slug-normalized note title rather than exact filename text.
+
+## Note directive frontmatter
+
+- The grouping directive is now frontmatter (`grouping: |`) rather than body text near the top of notes. Continuous scratchpad integration is opt-in via `organise: continuous`; pending continuous notes must also have `grouping` frontmatter so batch mode does not prompt mid-run.
