@@ -22,6 +22,7 @@ SCRATCHPAD_HEADING = "# -- SCRATCHPAD"
 GROUPING_FIELD = "grouping"
 ORGANISE_FIELD = "organise"
 CONTINUOUS_ORGANISE_VALUE = "continuous"
+DEFAULT_GROUPING = "Group points according to what you think the most useful/interesting/relevant groupings are. Ensure similar, related and contradictory points are adjacent."
 DEFAULT_NOTES_ROOT = Path("/home/pimania/notes")
 DEFAULT_CHUNK_PARAGRAPHS = 30
 DEFAULT_CHUNK_MAX_WORDS = 400
@@ -294,7 +295,7 @@ def prompt_for_grouping() -> str:
         lines.append(line)
     grouping = "\n".join(lines)
     if not grouping.strip():
-        grouping = "Group points according to what you think the most useful/interesting/relevant groupings are. Ensure similar, related and contradictory points are adjacent."
+        grouping = DEFAULT_GROUPING
     return grouping
 
 
@@ -1522,13 +1523,17 @@ def continuous_organise_paths(notes_root: Path) -> list[Path]:
             content, ORGANISE_FIELD, CONTINUOUS_ORGANISE_VALUE
         ):
             continue
+        if not read_frontmatter_field(content, GROUPING_FIELD):
+            content = set_frontmatter_block_field(
+                content, GROUPING_FIELD, DEFAULT_GROUPING
+            )
+            path.write_text(content, encoding="utf-8")
+            logger.warning(
+                f"{path} is marked {ORGANISE_FIELD}: {CONTINUOUS_ORGANISE_VALUE} "
+                f"but had no {GROUPING_FIELD} frontmatter; added default grouping."
+            )
         _, scratchpad = split_document_sections(content)
         if normalize_paragraphs(scratchpad):
-            if not read_frontmatter_field(content, GROUPING_FIELD):
-                raise RuntimeError(
-                    f"{path} is marked {ORGANISE_FIELD}: {CONTINUOUS_ORGANISE_VALUE} "
-                    f"but has no {GROUPING_FIELD} frontmatter."
-                )
             paths.append(path)
     return paths
 

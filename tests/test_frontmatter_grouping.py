@@ -1,7 +1,5 @@
-from pathlib import Path
 import sys
-
-import pytest
+from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -96,7 +94,7 @@ def test_continuous_organise_paths_selects_non_empty_scratchpads(
     assert integrate_notes.continuous_organise_paths(tmp_path) == [ready_note]
 
 
-def test_continuous_organise_paths_requires_grouping_for_pending_notes(
+def test_continuous_organise_paths_adds_default_grouping_for_pending_notes(
     tmp_path: Path,
 ) -> None:
     note = tmp_path / "missing-grouping.md"
@@ -105,5 +103,10 @@ def test_continuous_organise_paths_requires_grouping_for_pending_notes(
         encoding="utf-8",
     )
 
-    with pytest.raises(RuntimeError, match="has no grouping frontmatter"):
-        integrate_notes.continuous_organise_paths(tmp_path)
+    assert integrate_notes.continuous_organise_paths(tmp_path) == [note]
+
+    updated = note.read_text(encoding="utf-8")
+    assert integrate_notes.read_frontmatter_field(updated, "grouping") == (
+        integrate_notes.DEFAULT_GROUPING
+    )
+    assert "# -- SCRATCHPAD\n\nnew point\n" in updated
