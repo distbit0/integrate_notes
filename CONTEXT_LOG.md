@@ -12,3 +12,4 @@
 ## Note directive frontmatter
 
 - The grouping directive is now frontmatter (`grouping: |`) rather than body text near the top of notes. Continuous scratchpad integration is opt-in via `organise: continuous`; pending continuous notes must also have `grouping` frontmatter so batch mode does not prompt mid-run.
+- `continuous-note-organisation.timer` runs `src/integrate_notes.py --continuous --notes-root /home/pimania/notes` daily at 09:00 as a systemd user timer. The timer unit is stored outside this repo under `~/.config/systemd/user/`.
