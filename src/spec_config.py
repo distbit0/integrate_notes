@@ -10,7 +10,7 @@ ENV_API_KEY = "OPENROUTER_API_KEY"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 DEFAULT_MODEL = "openai/gpt-5.4"
-DEFAULT_REASONING = {"effort": "medium"}
+DEFAULT_REASONING = {"effort": "high"}
 
 DEFAULT_MAX_RETRIES = 3
 RETRY_INITIAL_DELAY_SECONDS = 2.0
