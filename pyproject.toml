@@ -12,7 +12,7 @@ dependencies = [
     "requests",
     "openai>=1.109.1",
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 license = {text = "UNLICENCE"}
 readme = "README.md"
 
@@ -25,3 +25,8 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

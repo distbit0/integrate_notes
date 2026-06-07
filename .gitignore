@@ -16,6 +16,7 @@ pip-wheel-metadata/
 share/python-wheels/
 MANIFEST
 .aider*
+.codex
 
 # Log files
 *.log
@@ -95,3 +96,4 @@ src/pending_verification_prompts.json
 
 src/logs/*
 logs/*
+**/node_modules/
