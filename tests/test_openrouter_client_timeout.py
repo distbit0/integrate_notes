@@ -62,18 +62,15 @@ def test_integration_request_sets_per_call_timeout() -> None:
         f"{integrate_notes.PATCH_BLOCK_END}"
     )
 
-    class Completions:
+    class Responses:
         def create(self, **kwargs):
             captured_kwargs.update(kwargs)
-            return SimpleNamespace(
-                choices=[
-                    SimpleNamespace(message=SimpleNamespace(content=patch_response))
-                ]
-            )
+            return SimpleNamespace(error=None, output_text=patch_response)
 
-    client = SimpleNamespace(chat=SimpleNamespace(completions=Completions()))
+    client = SimpleNamespace(responses=Responses())
 
     assert integrate_notes.request_integration(client, "prompt", "unit")
+    assert captured_kwargs["reasoning"] == integrate_notes.DEFAULT_REASONING
     assert (
         captured_kwargs["timeout"]
         == integrate_notes.OPENROUTER_REQUEST_TIMEOUT_SECONDS

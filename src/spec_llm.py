@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 from time import sleep
-from typing import Any, Iterable
+from typing import Iterable
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -13,6 +13,7 @@ from openai import OpenAI
 from spec_config import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_MODEL,
+    DEFAULT_REASONING,
     ENV_API_KEY,
     OPENROUTER_BASE_URL,
     OPENROUTER_REQUEST_TIMEOUT_SECONDS,
@@ -44,39 +45,6 @@ def create_openrouter_client() -> OpenAI:
     )
 
 
-def _as_chat_tool(tool: dict[str, Any]) -> dict[str, Any]:
-    if tool.get("type") != "function":
-        raise ValueError("Only function tools are supported.")
-    return {
-        "type": "function",
-        "function": {
-            "name": tool["name"],
-            "description": tool["description"],
-            "parameters": tool["parameters"],
-            "strict": tool.get("strict", False),
-        },
-    }
-
-
-def _message_text(message) -> str:
-    content = message.content
-    if isinstance(content, str):
-        return content
-    if content is None:
-        return ""
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict):
-                text = item.get("text")
-            else:
-                text = getattr(item, "text", None)
-            if isinstance(text, str):
-                parts.append(text)
-        return "".join(parts)
-    return str(content)
-
-
 def execute_with_retry(
     operation,
     description: str,
@@ -105,12 +73,15 @@ def execute_with_retry(
 
 def request_text(client: OpenAI, prompt: str, context_label: str) -> str:
     def perform_request() -> str:
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model=DEFAULT_MODEL,
-            messages=[{"role": "user", "content": prompt}],
+            reasoning=DEFAULT_REASONING,
+            input=prompt,
             timeout=OPENROUTER_REQUEST_TIMEOUT_SECONDS,
         )
-        output_text = _message_text(response.choices[0].message)
+        if getattr(response, "error", None):
+            raise RuntimeError(f"OpenRouter error for {context_label}: {response.error}")
+        output_text = response.output_text
         if not output_text.strip():
             raise RuntimeError(f"Received empty response for {context_label}.")
         return output_text.strip()
@@ -122,23 +93,26 @@ def request_tool_call(
     client: OpenAI, prompt: str, tools: Iterable[dict], context_label: str
 ) -> ToolCall:
     def perform_request() -> ToolCall:
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model=DEFAULT_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            tools=[_as_chat_tool(tool) for tool in tools],
+            reasoning=DEFAULT_REASONING,
+            input=prompt,
+            tools=list(tools),
             tool_choice="required",
             parallel_tool_calls=False,
             timeout=OPENROUTER_REQUEST_TIMEOUT_SECONDS,
         )
-        tool_calls = response.choices[0].message.tool_calls or []
+        if getattr(response, "error", None):
+            raise RuntimeError(f"OpenRouter error for {context_label}: {response.error}")
+        tool_calls = [item for item in response.output if item.type == "function_call"]
         if not tool_calls:
             raise RuntimeError(f"No tool call returned for {context_label}.")
         if len(tool_calls) > 1:
             raise RuntimeError(
                 f"Expected a single tool call for {context_label}, got {len(tool_calls)}."
             )
-        function = tool_calls[0].function
-        return ToolCall(function.name, function.arguments)
+        tool_call = tool_calls[0]
+        return ToolCall(tool_call.name, tool_call.arguments)
 
     return execute_with_retry(perform_request, context_label)
 

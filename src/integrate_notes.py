@@ -29,6 +29,7 @@ DEFAULT_CHUNK_MAX_WORDS = 400
 ENV_API_KEY = "OPENROUTER_API_KEY"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "openai/gpt-5.4"
+DEFAULT_REASONING = {"effort": "medium"}
 DEFAULT_MAX_RETRIES = 3
 RETRY_INITIAL_DELAY_SECONDS = 2.0
 RETRY_BACKOFF_FACTOR = 2.0
@@ -396,25 +397,6 @@ def create_openrouter_client() -> OpenAI:
     )
 
 
-def _message_text(message) -> str:
-    content = message.content
-    if isinstance(content, str):
-        return content
-    if content is None:
-        return ""
-    if isinstance(content, list):
-        parts: List[str] = []
-        for item in content:
-            if isinstance(item, dict):
-                text = item.get("text")
-            else:
-                text = getattr(item, "text", None)
-            if isinstance(text, str):
-                parts.append(text)
-        return "".join(parts)
-    return str(content)
-
-
 NOTIFY_SEND_PATH = shutil.which("notify-send")
 _NOTIFY_SEND_UNAVAILABLE_WARNING_EMITTED = False
 
@@ -555,12 +537,15 @@ def build_integration_prompt(
 
 def request_integration(client: OpenAI, prompt: str, context_label: str) -> str:
     def perform_request() -> str:
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model=DEFAULT_MODEL,
-            messages=[{"role": "user", "content": prompt}],
+            reasoning=DEFAULT_REASONING,
+            input=prompt,
             timeout=OPENROUTER_REQUEST_TIMEOUT_SECONDS,
         )
-        output_text = _message_text(response.choices[0].message)
+        if getattr(response, "error", None):
+            raise RuntimeError(f"OpenRouter error for {context_label}: {response.error}")
+        output_text = response.output_text
         if not output_text.strip():
             raise RuntimeError("Received empty response from GPT integration call.")
         patch_text = extract_patch_text_from_response(output_text)
@@ -1321,12 +1306,15 @@ def build_verification_prompt(
 
 def request_verification(client: OpenAI, prompt: str, context_label: str) -> str:
     def perform_request() -> str:
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model=DEFAULT_MODEL,
-            messages=[{"role": "user", "content": prompt}],
+            reasoning=DEFAULT_REASONING,
+            input=prompt,
             timeout=OPENROUTER_REQUEST_TIMEOUT_SECONDS,
         )
-        output_text = _message_text(response.choices[0].message)
+        if getattr(response, "error", None):
+            raise RuntimeError(f"OpenRouter error for {context_label}: {response.error}")
+        output_text = response.output_text
         if not output_text.strip():
             raise RuntimeError("Received empty response from GPT verification call.")
         return output_text.strip()
