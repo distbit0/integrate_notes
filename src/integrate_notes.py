@@ -28,7 +28,7 @@ DEFAULT_CHUNK_PARAGRAPHS = 30
 DEFAULT_CHUNK_MAX_WORDS = 400
 ENV_API_KEY = "OPENROUTER_API_KEY"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL = "openai/gpt-5.4"
+DEFAULT_MODEL = "minimax/minimax-m3"
 DEFAULT_REASONING = {"effort": "high"}
 DEFAULT_MAX_RETRIES = 3
 RETRY_INITIAL_DELAY_SECONDS = 2.0
@@ -93,6 +93,49 @@ PATCH_BLOCK_DIVIDER = "======="
 PATCH_BLOCK_END = ">>>>>>> REPLACE"
 DUPLICATION_BLOCK_START = "<<<<<<< DUPLICATE"
 DUPLICATION_BLOCK_END = ">>>>>>> DUPLICATE"
+INTEGRATION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["integrate"]},
+        "patches": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "search": {"type": "string"},
+                    "replace": {"type": "string"},
+                },
+                "required": ["search", "replace"],
+                "additionalProperties": False,
+            },
+        },
+        "duplications": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "notes": {"type": "string"},
+                    "body": {"type": "string"},
+                },
+                "required": ["notes", "body"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["action", "patches", "duplications"],
+    "additionalProperties": False,
+}
+INTEGRATION_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "name": "integration_response",
+    "strict": True,
+    "schema": INTEGRATION_RESPONSE_SCHEMA,
+}
+INTEGRATION_RESPONSE_SCHEMA_TEXT = json.dumps(
+    INTEGRATION_RESPONSE_SCHEMA,
+    ensure_ascii=False,
+    indent=2,
+)
 MAX_PATCH_ATTEMPTS = 3
 
 
@@ -470,16 +513,17 @@ def build_integration_prompt(
         f"Maintain the grouping approach: {grouping}."
     )
     response_instructions = (
-        "Return only patch instructions and duplication proofs using the exact structures below."
-        " For each patch:"
-        f"\n{PATCH_BLOCK_START}\n<text to find>\n{PATCH_BLOCK_DIVIDER}\n<replacement text>\n{PATCH_BLOCK_END}"
-        "\nFor each duplication proof (use this when notes are already present in the current document body, so no patch is needed):"
-        f"\n{DUPLICATION_BLOCK_START}\n<notes text already covered>\n{PATCH_BLOCK_DIVIDER}\n<body text that already contains it>\n{DUPLICATION_BLOCK_END}"
-        "\nEmit the blocks back-to-back in the order they should be applied or checked. "
-        "If any notes are already present in the document body and therefore do not need a patch, you must include a duplication proof block for them. "
+        "Return exactly one JSON object matching the schema below. "
+        "Use patches for edits and duplications for notes already present in the current document body. "
+        "For each patch, search must be the exact text to find and replace must be the complete replacement text. "
+        "For insertions, include the anchor text in both search and replace. "
+        "For each duplication proof, notes must be the exact notes text already covered and body must be the exact current document body text that contains it. "
+        "Emit patches in the order they should be applied. "
+        "If any notes are already present in the document body and therefore do not need a patch, you must include a duplication proof entry for them. "
         "SEARCH and DUPLICATE/BODY text must each be a single contiguous span copied from the current document body; do not concatenate separate sections. "
-        "Do not add commentary, numbering, markdown fences, or explanations. "
-        "If no changes are required and no duplication proofs are needed, return an empty string."
+        "Do not add commentary, numbering, markdown fences, or explanations outside the JSON object. "
+        "Use empty patches and duplications arrays only when no changes are required and no duplication proofs are needed."
+        f"\n<json_schema>\n{INTEGRATION_RESPONSE_SCHEMA_TEXT}\n</json_schema>"
     )
 
     sections = [
@@ -496,12 +540,12 @@ def build_integration_prompt(
         feedback_lines: List[str] = []
         if failed_formatting:
             feedback_lines.append(
-                "The previous response could not be parsed. Fix the formatting issues below and re-emit only valid blocks."
+                "The previous JSON response could not be parsed. Fix the issues below and re-emit only a valid JSON object."
             )
             feedback_lines.append(f"Error: {failed_formatting}")
         if failed_patches:
             feedback_lines.append(
-                "The previous patch attempt failed because the SEARCH block(s) below did not match the current document."
+                "The previous patch attempt failed because the search text below did not match the current document."
             )
             for failure in failed_patches:
                 feedback_lines.append(
@@ -527,9 +571,9 @@ def build_integration_prompt(
 
     if previous_response:
         sections.append(
-            "<previous_patch_response>\n"
+            "<previous_json_response>\n"
             + previous_response
-            + "\n</previous_patch_response>"
+            + "\n</previous_json_response>"
         )
 
     return "\n\n\n\n\n".join(sections)
@@ -541,6 +585,7 @@ def request_integration(client: OpenAI, prompt: str, context_label: str) -> str:
             model=DEFAULT_MODEL,
             reasoning=DEFAULT_REASONING,
             input=prompt,
+            text={"format": INTEGRATION_RESPONSE_FORMAT},
             timeout=OPENROUTER_REQUEST_TIMEOUT_SECONDS,
         )
         if getattr(response, "error", None):
@@ -548,28 +593,9 @@ def request_integration(client: OpenAI, prompt: str, context_label: str) -> str:
         output_text = response.output_text
         if not output_text.strip():
             raise RuntimeError("Received empty response from GPT integration call.")
-        patch_text = extract_patch_text_from_response(output_text)
-        # logger.debug(f"Integration patches for {context_label}:\n{patch_text}")
-        return patch_text
+        return output_text.strip()
 
     return execute_with_retry(perform_request, f"integration {context_label}")
-
-
-def extract_patch_text_from_response(response_text: str) -> str:
-    stripped = response_text.strip()
-    if not stripped:
-        return ""
-
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        if not lines:
-            return ""
-        lines = lines[1:]
-        while lines and lines[-1].strip() == "```":
-            lines.pop()
-        stripped = "\n".join(lines).strip()
-
-    return stripped
 
 
 @dataclass(frozen=True)
@@ -604,123 +630,116 @@ class IntegrationParseError(RuntimeError):
         self.block_text = block_text
 
 
-def _normalize_line_endings(text: str) -> str:
-    return text.replace("\r\n", "\n").replace("\r", "\n")
+def _json_payload_text(payload: Any) -> str:
+    try:
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+    except TypeError:
+        return repr(payload)
 
 
-def _sanitize_patch_segment(segment: str) -> str:
-    cleaned = _normalize_line_endings(segment)
-    if cleaned.startswith("\n"):
-        cleaned = cleaned[1:]
-    if cleaned.endswith("\n"):
-        cleaned = cleaned[:-1]
-    return cleaned
+def _strip_json_code_fence(response_text: str) -> str:
+    stripped = response_text.strip()
+    if not stripped.startswith("```"):
+        return stripped
 
+    lines = stripped.splitlines()
+    if len(lines) < 3:
+        return stripped
 
-def _find_next_block_start(
-    text: str, position: int, markers: Sequence[str]
-) -> tuple[int, str] | None:
-    candidates: List[tuple[int, str]] = []
-    for marker in markers:
-        index = text.find(marker, position)
-        if index != -1:
-            candidates.append((index, marker))
-    if not candidates:
-        return None
-    return min(candidates, key=lambda item: item[0])
+    opening = lines[0].strip().lower()
+    if opening not in {"```", "```json"} or lines[-1].strip() != "```":
+        return stripped
 
-
-def _slice_block_for_error(text: str, start_index: int, search_from: int) -> str:
-    next_block = _find_next_block_start(
-        text, search_from, [PATCH_BLOCK_START, DUPLICATION_BLOCK_START]
+    logger.warning(
+        "Integration response was wrapped in a markdown JSON fence; parsing the fenced JSON body."
     )
-    end_index = next_block[0] if next_block else len(text)
-    return text[start_index:end_index].strip()
+    return "\n".join(lines[1:-1]).strip()
 
 
-def parse_integration_blocks(
+def parse_integration_payload(
     response_text: str,
 ) -> tuple[List[PatchInstruction], List[DuplicationProof]]:
     if not response_text.strip():
-        return [], []
+        raise IntegrationParseError("Integration response is empty.", response_text)
+    json_text = _strip_json_code_fence(response_text)
+    try:
+        payload = json.loads(json_text)
+    except json.JSONDecodeError as error:
+        raise IntegrationParseError(
+            f"Integration response is not valid JSON: {error}",
+            response_text,
+        ) from error
+    if not isinstance(payload, dict):
+        raise IntegrationParseError(
+            "Integration response must be a JSON object.",
+            _json_payload_text(payload),
+        )
 
-    cleaned = _normalize_line_endings(response_text)
+    if payload.get("action") != "integrate":
+        raise IntegrationParseError(
+            "Integration JSON response must include action='integrate'.",
+            _json_payload_text(payload),
+        )
+
+    patches = payload.get("patches")
+    if not isinstance(patches, list):
+        raise IntegrationParseError(
+            "Integration JSON response must include a patches array.",
+            _json_payload_text(payload),
+        )
+    duplication_payloads = payload.get("duplications")
+    if not isinstance(duplication_payloads, list):
+        raise IntegrationParseError(
+            "Integration JSON response must include a duplications array.",
+            _json_payload_text(payload),
+        )
+
     instructions: List[PatchInstruction] = []
     duplications: List[DuplicationProof] = []
-    position = 0
 
-    while True:
-        next_block = _find_next_block_start(
-            cleaned, position, [PATCH_BLOCK_START, DUPLICATION_BLOCK_START]
-        )
-        if next_block is None:
-            remaining = cleaned[position:].strip()
-            if remaining:
-                logger.warning(
-                    "Ignoring unexpected content outside integration blocks: {}".format(
-                        remaining[:120]
-                    )
-                )
-            break
-
-        start_index, block_start = next_block
-        divider_index = cleaned.find(
-            PATCH_BLOCK_DIVIDER, start_index + len(block_start)
-        )
-        if divider_index == -1:
-            block_text = _slice_block_for_error(
-                cleaned, start_index, start_index + len(block_start)
-            )
+    for patch in patches:
+        if not isinstance(patch, dict):
             raise IntegrationParseError(
-                "Integration block is missing the divider '{}'.".format(
-                    PATCH_BLOCK_DIVIDER
-                ),
-                block_text,
+                "Each patch must be an object.",
+                _json_payload_text(payload),
             )
-
-        if block_start == PATCH_BLOCK_START:
-            block_end = PATCH_BLOCK_END
-        else:
-            block_end = DUPLICATION_BLOCK_END
-
-        end_index = cleaned.find(block_end, divider_index + len(PATCH_BLOCK_DIVIDER))
-        if end_index == -1:
-            block_text = _slice_block_for_error(
-                cleaned, start_index, divider_index + len(PATCH_BLOCK_DIVIDER)
-            )
+        search_text = patch.get("search")
+        if not isinstance(search_text, str) or not search_text.strip():
             raise IntegrationParseError(
-                "Integration block is missing the end marker '{}'.".format(block_end),
-                block_text,
+                "Each patch must include non-empty search text.",
+                _json_payload_text(payload),
             )
-
-        first_segment = cleaned[start_index + len(block_start) : divider_index]
-        second_segment = cleaned[divider_index + len(PATCH_BLOCK_DIVIDER) : end_index]
-
-        first_text = _sanitize_patch_segment(first_segment)
-        second_text = _sanitize_patch_segment(second_segment)
-
-        if block_start == PATCH_BLOCK_START:
-            if not first_text.strip():
-                block_text = cleaned[start_index : end_index + len(block_end)].strip()
-                raise IntegrationParseError(
-                    "Patch SEARCH text must contain non-whitespace characters.",
-                    block_text,
-                )
-            instructions.append(
-                PatchInstruction(search_text=first_text, replace_text=second_text)
+        replace_text = patch.get("replace")
+        if not isinstance(replace_text, str):
+            raise IntegrationParseError(
+                "Each patch must include string replace text.",
+                _json_payload_text(payload),
             )
-        else:
-            if not first_text.strip() or not second_text.strip():
-                block_text = cleaned[start_index : end_index + len(block_end)].strip()
-                raise IntegrationParseError(
-                    "Duplication block must include non-whitespace notes and body text.",
-                    block_text,
-                )
-            duplications.append(
-                DuplicationProof(notes_text=first_text, body_text=second_text)
-            )
+        instructions.append(
+            PatchInstruction(search_text=search_text, replace_text=replace_text)
+        )
 
-        position = end_index + len(block_end)
+    for duplication_payload in duplication_payloads:
+        if not isinstance(duplication_payload, dict):
+            raise IntegrationParseError(
+                "Each duplication proof must be an object.",
+                _json_payload_text(payload),
+            )
+        notes_text = duplication_payload.get("notes")
+        body_text = duplication_payload.get("body")
+        if not isinstance(notes_text, str) or not notes_text.strip():
+            raise IntegrationParseError(
+                "Each duplication proof must include non-empty notes text.",
+                _json_payload_text(payload),
+            )
+        if not isinstance(body_text, str) or not body_text.strip():
+            raise IntegrationParseError(
+                "Each duplication proof must include non-empty body text.",
+                _json_payload_text(payload),
+            )
+        duplications.append(
+            DuplicationProof(notes_text=notes_text, body_text=body_text)
+        )
 
     return instructions, duplications
 
@@ -946,11 +965,11 @@ def integrate_chunk_with_patches(
                 else None
             ),
         )
-        patch_text = request_integration(client, prompt, attempt_label)
-        previous_response = patch_text
+        response_text = request_integration(client, prompt, attempt_label)
+        previous_response = response_text
 
         try:
-            instructions, duplications = parse_integration_blocks(patch_text)
+            instructions, duplications = parse_integration_payload(response_text)
         except IntegrationParseError as error:
             failed_formatting = str(error)
             failed_patches = None
@@ -960,7 +979,7 @@ def integrate_chunk_with_patches(
             )
             logger.info(
                 f"Invalid integration response for {attempt_label} on attempt {attempt}; "
-                f"reason: {error}\nFailed block:\n{error.block_text}"
+                f"reason: {error}\nFailed payload:\n{error.block_text}"
             )
             logger.info(
                 f"Retrying {context_label}; response formatting was invalid on attempt {attempt}."

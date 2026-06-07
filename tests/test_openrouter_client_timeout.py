@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,23 +55,52 @@ def test_spec_openrouter_client_uses_bounded_timeout(monkeypatch) -> None:
 
 def test_integration_request_sets_per_call_timeout() -> None:
     captured_kwargs = {}
-    patch_response = (
-        f"{integrate_notes.PATCH_BLOCK_START}\n"
-        "# Body\n"
-        f"{integrate_notes.PATCH_BLOCK_DIVIDER}\n"
-        "# Body\n"
-        f"{integrate_notes.PATCH_BLOCK_END}"
+    tool_arguments = json.dumps(
+        {
+            "action": "integrate",
+            "patches": [
+                {
+                    "search": "- Create space for the other person to talk.\n- Ask open-ended follow-up questions.",
+                    "replace": (
+                        "- Create space for the other person to talk.\n"
+                        "- Ask people to tell you more rather than immediately giving advice or your opinion.\n"
+                        '- Use verbal acknowledgments while they are speaking, e.g., "yeah that makes sense," "uh huh."\n'
+                        "- Ask open-ended follow-up questions."
+                    ),
+                }
+            ],
+            "duplications": [],
+        }
     )
 
     class Responses:
         def create(self, **kwargs):
             captured_kwargs.update(kwargs)
-            return SimpleNamespace(error=None, output_text=patch_response)
+            return SimpleNamespace(error=None, output_text=f"```json\n{tool_arguments}\n```")
 
     client = SimpleNamespace(responses=Responses())
 
-    assert integrate_notes.request_integration(client, "prompt", "unit")
+    response_text = integrate_notes.request_integration(client, "prompt", "unit")
+    instructions, duplications = integrate_notes.parse_integration_payload(
+        response_text
+    )
+
+    assert instructions == [
+        integrate_notes.PatchInstruction(
+            search_text="- Create space for the other person to talk.\n- Ask open-ended follow-up questions.",
+            replace_text=(
+                "- Create space for the other person to talk.\n"
+                "- Ask people to tell you more rather than immediately giving advice or your opinion.\n"
+                '- Use verbal acknowledgments while they are speaking, e.g., "yeah that makes sense," "uh huh."\n'
+                "- Ask open-ended follow-up questions."
+            ),
+        )
+    ]
+    assert duplications == []
     assert captured_kwargs["reasoning"] == integrate_notes.DEFAULT_REASONING
+    assert captured_kwargs["text"] == {
+        "format": integrate_notes.INTEGRATION_RESPONSE_FORMAT
+    }
     assert (
         captured_kwargs["timeout"]
         == integrate_notes.OPENROUTER_REQUEST_TIMEOUT_SECONDS
