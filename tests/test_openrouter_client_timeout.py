@@ -1,0 +1,46 @@
+import sys
+from pathlib import Path
+
+
+SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+import integrate_notes  # noqa: E402
+import spec_llm  # noqa: E402
+from spec_config import OPENROUTER_REQUEST_TIMEOUT_SECONDS  # noqa: E402
+
+
+def test_integrate_notes_openrouter_client_uses_bounded_timeout(monkeypatch) -> None:
+    captured_kwargs = {}
+    client = object()
+
+    def openai_client(**kwargs):
+        captured_kwargs.update(kwargs)
+        return client
+
+    monkeypatch.setattr(integrate_notes, "OpenAI", openai_client)
+    monkeypatch.setattr(integrate_notes, "load_dotenv", lambda *_, **__: None)
+    monkeypatch.setenv(integrate_notes.ENV_API_KEY, "test-key")
+
+    assert integrate_notes.create_openrouter_client() is client
+    assert (
+        captured_kwargs["timeout"]
+        == integrate_notes.OPENROUTER_REQUEST_TIMEOUT_SECONDS
+    )
+
+
+def test_spec_openrouter_client_uses_bounded_timeout(monkeypatch) -> None:
+    captured_kwargs = {}
+    client = object()
+
+    def openai_client(**kwargs):
+        captured_kwargs.update(kwargs)
+        return client
+
+    monkeypatch.setattr(spec_llm, "OpenAI", openai_client)
+    monkeypatch.setattr(spec_llm, "load_dotenv", lambda *_, **__: None)
+    monkeypatch.setenv(spec_llm.ENV_API_KEY, "test-key")
+
+    assert spec_llm.create_openrouter_client() is client
+    assert captured_kwargs["timeout"] == OPENROUTER_REQUEST_TIMEOUT_SECONDS
