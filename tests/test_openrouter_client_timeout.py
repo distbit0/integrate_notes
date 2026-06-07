@@ -8,7 +8,10 @@ if str(SRC_DIR) not in sys.path:
 
 import integrate_notes  # noqa: E402
 import spec_llm  # noqa: E402
-from spec_config import OPENROUTER_REQUEST_TIMEOUT_SECONDS  # noqa: E402
+from spec_config import (  # noqa: E402
+    OPENROUTER_REQUEST_TIMEOUT_SECONDS,
+    OPENROUTER_SDK_MAX_RETRIES,
+)
 
 
 def test_integrate_notes_openrouter_client_uses_bounded_timeout(monkeypatch) -> None:
@@ -28,6 +31,7 @@ def test_integrate_notes_openrouter_client_uses_bounded_timeout(monkeypatch) -> 
         captured_kwargs["timeout"]
         == integrate_notes.OPENROUTER_REQUEST_TIMEOUT_SECONDS
     )
+    assert captured_kwargs["max_retries"] == integrate_notes.OPENROUTER_SDK_MAX_RETRIES
 
 
 def test_spec_openrouter_client_uses_bounded_timeout(monkeypatch) -> None:
@@ -44,3 +48,4 @@ def test_spec_openrouter_client_uses_bounded_timeout(monkeypatch) -> None:
 
     assert spec_llm.create_openrouter_client() is client
     assert captured_kwargs["timeout"] == OPENROUTER_REQUEST_TIMEOUT_SECONDS
+    assert captured_kwargs["max_retries"] == OPENROUTER_SDK_MAX_RETRIES

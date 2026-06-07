@@ -16,6 +16,7 @@ from spec_config import (
     ENV_API_KEY,
     OPENROUTER_BASE_URL,
     OPENROUTER_REQUEST_TIMEOUT_SECONDS,
+    OPENROUTER_SDK_MAX_RETRIES,
     RETRY_BACKOFF_FACTOR,
     RETRY_INITIAL_DELAY_SECONDS,
     repo_root,
@@ -39,6 +40,7 @@ def create_openrouter_client() -> OpenAI:
         api_key=api_key,
         base_url=OPENROUTER_BASE_URL,
         timeout=OPENROUTER_REQUEST_TIMEOUT_SECONDS,
+        max_retries=OPENROUTER_SDK_MAX_RETRIES,
     )
 
 
