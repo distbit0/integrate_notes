@@ -108,6 +108,7 @@ def request_text(client: OpenAI, prompt: str, context_label: str) -> str:
         response = client.chat.completions.create(
             model=DEFAULT_MODEL,
             messages=[{"role": "user", "content": prompt}],
+            timeout=OPENROUTER_REQUEST_TIMEOUT_SECONDS,
         )
         output_text = _message_text(response.choices[0].message)
         if not output_text.strip():
@@ -127,6 +128,7 @@ def request_tool_call(
             tools=[_as_chat_tool(tool) for tool in tools],
             tool_choice="required",
             parallel_tool_calls=False,
+            timeout=OPENROUTER_REQUEST_TIMEOUT_SECONDS,
         )
         tool_calls = response.choices[0].message.tool_calls or []
         if not tool_calls:

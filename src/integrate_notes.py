@@ -558,6 +558,7 @@ def request_integration(client: OpenAI, prompt: str, context_label: str) -> str:
         response = client.chat.completions.create(
             model=DEFAULT_MODEL,
             messages=[{"role": "user", "content": prompt}],
+            timeout=OPENROUTER_REQUEST_TIMEOUT_SECONDS,
         )
         output_text = _message_text(response.choices[0].message)
         if not output_text.strip():
@@ -1323,6 +1324,7 @@ def request_verification(client: OpenAI, prompt: str, context_label: str) -> str
         response = client.chat.completions.create(
             model=DEFAULT_MODEL,
             messages=[{"role": "user", "content": prompt}],
+            timeout=OPENROUTER_REQUEST_TIMEOUT_SECONDS,
         )
         output_text = _message_text(response.choices[0].message)
         if not output_text.strip():

@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import spec_llm  # noqa: E402
 from spec_config import DEFAULT_MODEL  # noqa: E402
+from spec_config import OPENROUTER_REQUEST_TIMEOUT_SECONDS  # noqa: E402
 
 
 class FakeCompletions:
@@ -37,6 +38,7 @@ def test_request_text_uses_openrouter_chat_completion_shape():
     assert completions.kwargs == {
         "model": DEFAULT_MODEL,
         "messages": [{"role": "user", "content": "prompt"}],
+        "timeout": OPENROUTER_REQUEST_TIMEOUT_SECONDS,
     }
 
 
@@ -81,6 +83,7 @@ def test_request_tool_call_converts_response_tool_schema_to_chat_tool_schema():
         ],
         "tool_choice": "required",
         "parallel_tool_calls": False,
+        "timeout": OPENROUTER_REQUEST_TIMEOUT_SECONDS,
     }
 
 

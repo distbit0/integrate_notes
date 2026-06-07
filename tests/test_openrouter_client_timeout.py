@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
@@ -49,3 +50,31 @@ def test_spec_openrouter_client_uses_bounded_timeout(monkeypatch) -> None:
     assert spec_llm.create_openrouter_client() is client
     assert captured_kwargs["timeout"] == OPENROUTER_REQUEST_TIMEOUT_SECONDS
     assert captured_kwargs["max_retries"] == OPENROUTER_SDK_MAX_RETRIES
+
+
+def test_integration_request_sets_per_call_timeout() -> None:
+    captured_kwargs = {}
+    patch_response = (
+        f"{integrate_notes.PATCH_BLOCK_START}\n"
+        "# Body\n"
+        f"{integrate_notes.PATCH_BLOCK_DIVIDER}\n"
+        "# Body\n"
+        f"{integrate_notes.PATCH_BLOCK_END}"
+    )
+
+    class Completions:
+        def create(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(message=SimpleNamespace(content=patch_response))
+                ]
+            )
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=Completions()))
+
+    assert integrate_notes.request_integration(client, "prompt", "unit")
+    assert (
+        captured_kwargs["timeout"]
+        == integrate_notes.OPENROUTER_REQUEST_TIMEOUT_SECONDS
+    )
